@@ -1,0 +1,50 @@
+/* uni-app 主题变量：颜色、间距、圆角、字号。
+   所有页面与组件统一引用，避免散落的魔法值。 */
+
+/* 品牌 */
+$zm-primary: #12b886;
+$zm-primary-dark: #0ca678;
+$zm-primary-soft: #e6f7f1;
+
+/* 语义色 */
+$zm-warning: #f59f00;
+$zm-warning-soft: #fff8e6;
+$zm-danger: #f05252;
+$zm-danger-soft: #fdeceb;
+$zm-info: #4c6ef5;
+$zm-info-soft: #eef2ff;
+
+/* 文本 */
+$zm-text: #14171c;
+$zm-text-secondary: #5b6270;
+$zm-text-muted: #8a909c;
+$zm-text-inverse: #ffffff;
+
+/* 背景与描边 */
+$zm-bg: #f4f5f7;
+$zm-surface: #ffffff;
+$zm-surface-alt: #fafbfc;
+$zm-border: #e8eaee;
+$zm-border-strong: #d8dbe1;
+
+/* 尺寸 */
+$zm-radius-sm: 8rpx;
+$zm-radius-md: 20rpx;
+$zm-radius-lg: 32rpx;
+$zm-radius-pill: 999rpx;
+
+$zm-space-xs: 8rpx;
+$zm-space-sm: 16rpx;
+$zm-space-md: 24rpx;
+$zm-space-lg: 32rpx;
+$zm-space-xl: 48rpx;
+
+$zm-font-xs: 22rpx;
+$zm-font-sm: 26rpx;
+$zm-font-md: 30rpx;
+$zm-font-lg: 36rpx;
+$zm-font-xl: 44rpx;
+$zm-font-xxl: 64rpx;
+
+$zm-shadow-card: 0 8rpx 32rpx rgba(20, 23, 28, 0.06);
+$zm-shadow-float: 0 12rpx 40rpx rgba(18, 184, 134, 0.28);

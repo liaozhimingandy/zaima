@@ -1,0 +1,41 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# ---------- 环境与密钥 ----------
+.env
+.env.local
+*.env.bak
+
+# ---------- 运行产物 ----------
+.mailbox/
+*.log
+logs/
+
+# ---------- 前端 ----------
+node_modules/
+dist/
+unpackage/
+.hbuilderx/
+*.local
+
+# ---------- 编辑器/系统 ----------
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ---------- CI 产物 ----------
+pytest-*.xml
+release-manifest/
+
+# ---------- 本地 Agent 记忆/会话数据（不入库）----------
+.workbuddy/

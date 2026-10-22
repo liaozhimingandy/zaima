@@ -1,0 +1,37 @@
+# 构建上下文只需要这些文件，其余一律排除，避免密钥与中间产物进入镜像
+
+# 环境与密钥
+.env
+.env.*
+*.pem
+*.key
+
+# Python 虚拟环境与缓存
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# 运行产物
+.mailbox
+logs
+*.log
+
+# 测试与开发工具（不进生产镜像）
+tests
+pytest.ini
+pyproject.toml
+
+# 版本控制与 CI
+.git
+.gitignore
+.github
+
+# 文档
+*.md
+docs

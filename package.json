@@ -1,0 +1,21 @@
+{
+  "name": "zaima",
+  "version": "1.0.0",
+  "private": true,
+  "description": "在吗 —— 每天点一下，让有人知道你还在。仓库根目录的快捷脚本，实际前端工程在 frontend/",
+  "scripts": {
+    "install:frontend": "npm --prefix frontend ci --registry=https://registry.npmjs.org --no-audit --no-fund",
+    "dev:h5": "npm --prefix frontend run dev:h5",
+    "dev:mp-weixin": "npm --prefix frontend run dev:mp-weixin",
+    "dev:mp-alipay": "npm --prefix frontend run dev:mp-alipay",
+    "dev:app": "npm --prefix frontend run dev:app",
+    "build:h5": "npm --prefix frontend run build:h5",
+    "build:mp-weixin": "npm --prefix frontend run build:mp-weixin",
+    "build:mp-alipay": "npm --prefix frontend run build:mp-alipay",
+    "build:app": "npm --prefix frontend run build:app",
+    "type-check": "npm --prefix frontend run type-check"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

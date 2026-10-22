@@ -1,0 +1,714 @@
+name: Release
+
+# 触发：
+# - push 到 main：构建前端产物 + 推送开发镜像 dev-<sha>
+# - push v* Tag：完整发布，推送 1.2.3 / sha-<sha> / latest
+# - 手动：默认只构建不发布，必须显式勾选 publish 才会推送镜像
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: '是否推送镜像到 Docker Hub（仅 main 或 v* Tag 允许）'
+        type: boolean
+        default: false
+      force_tag:
+        description: '允许覆盖已存在的版本镜像标签（危险，仅用于修复失败发布）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: '3.13'
+  NODE_VERSION: '22'
+  REGISTRY: docker.io
+
+jobs:
+  # ------------------------------------------------------------------
+  # 1. 版本与发布策略（唯一决策点）
+  # ------------------------------------------------------------------
+  meta:
+    name: 计算版本与发布策略
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.calc.outputs.version }}
+      short_sha: ${{ steps.calc.outputs.short_sha }}
+      image: ${{ steps.calc.outputs.image }}
+      tags: ${{ steps.calc.outputs.tags }}
+      app_tags: ${{ steps.calc.outputs.app_tags }}
+      should_push: ${{ steps.calc.outputs.should_push }}
+      is_release: ${{ steps.calc.outputs.is_release }}
+      has_docker_config: ${{ steps.calc.outputs.has_docker_config }}
+    steps:
+      - name: 计算版本号、镜像标签与是否发布
+        id: calc
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+          INPUT_FORCE: ${{ inputs.force_tag }}
+          DOCKER_REPOSITORY: ${{ vars.DOCKER_REPOSITORY }}
+          ENABLE_FLOATING_TAGS: ${{ vars.ENABLE_FLOATING_TAGS }}
+        run: |
+          set -euo pipefail
+
+          FULL_SHA="${GITHUB_SHA}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          SEMVER_RE='^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'
+
+          VERSION=""
+          SHOULD_PUSH="false"
+          IS_RELEASE="false"
+          FLOATING="false"
+
+          if [ "${EVENT_NAME}" = "push" ] && [ "${REF_TYPE}" = "tag" ]; then
+            if ! [[ "${REF_NAME}" =~ ${SEMVER_RE} ]]; then
+              echo "::error::Tag ${REF_NAME} 不符合 v<主>.<次>.<修订> 规范，拒绝发布"
+              exit 1
+            fi
+            VERSION="${REF_NAME#v}"
+            SHOULD_PUSH="true"
+            IS_RELEASE="true"
+            FLOATING="${ENABLE_FLOATING_TAGS:-false}"
+          elif [ "${EVENT_NAME}" = "push" ]; then
+            if [ "${REF_NAME}" = "main" ]; then
+              VERSION="dev-${SHORT_SHA}"
+              SHOULD_PUSH="true"
+            else
+              VERSION="dev-${SHORT_SHA}"
+              SHOULD_PUSH="false"
+            fi
+          elif [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ "${INPUT_PUBLISH}" = "true" ]; then
+              if [ "${REF_TYPE}" = "tag" ]; then
+                if ! [[ "${REF_NAME}" =~ ${SEMVER_RE} ]]; then
+                  echo "::error::手动发布只能基于 v<主>.<次>.<修订> Tag，当前为 ${REF_NAME}"
+                  exit 1
+                fi
+                VERSION="${REF_NAME#v}"
+                IS_RELEASE="true"
+              elif [ "${REF_NAME}" = "main" ]; then
+                VERSION="dev-${SHORT_SHA}"
+              else
+                echo "::error::手动发布只允许在 main 分支或 v* Tag 上执行，当前分支为 ${REF_NAME}"
+                exit 1
+              fi
+              SHOULD_PUSH="true"
+              FLOATING="${ENABLE_FLOATING_TAGS:-false}"
+            else
+              VERSION="dev-${SHORT_SHA}"
+            fi
+          fi
+
+          if [ -z "${VERSION}" ]; then
+            echo "::error::无法确定版本号"
+            exit 1
+          fi
+
+          if [ -n "${DOCKER_REPOSITORY}" ]; then
+            IMAGE="${DOCKER_REPOSITORY}"
+            HAS_CFG="true"
+          else
+            # 未配置仓库变量时仅用于本地构建，不推送
+            IMAGE="zaima-api"
+            HAS_CFG="false"
+          fi
+
+          TAGS=""
+          if [ "${HAS_CFG}" = "true" ]; then
+            TAGS="${IMAGE}:${VERSION}"
+            TAGS="${TAGS}"$'\n'"${IMAGE}:sha-${FULL_SHA}"
+            if [ "${IS_RELEASE}" = "true" ]; then
+              TAGS="${TAGS}"$'\n'"${IMAGE}:latest"
+              if [ "${FLOATING}" = "true" ] && [[ "${VERSION}" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+                TAGS="${TAGS}"$'\n'"${IMAGE}:${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+                TAGS="${TAGS}"$'\n'"${IMAGE}:${BASH_REMATCH[1]}"
+              fi
+            fi
+          fi
+
+          # 一体化调试镜像（API + H5 同源）在同一仓库加 -app 后缀，避免额外配置一个仓库变量
+          APP_TAGS=""
+          if [ -n "${TAGS}" ]; then
+            APP_TAGS=$(printf '%s\n' "${TAGS}" | sed 's/$/-app/')
+          fi
+
+          {
+            echo "version=${VERSION}"
+            echo "short_sha=${SHORT_SHA}"
+            echo "image=${IMAGE}"
+            echo "should_push=${SHOULD_PUSH}"
+            echo "is_release=${IS_RELEASE}"
+            echo "has_docker_config=${HAS_CFG}"
+            echo "tags<<TAGS_EOF"
+            echo "${TAGS}"
+            echo "TAGS_EOF"
+            echo "app_tags<<APP_TAGS_EOF"
+            echo "${APP_TAGS}"
+            echo "APP_TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### 发布策略"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 事件 | \`${EVENT_NAME}\` |"
+            echo "| 引用 | \`${REF_TYPE}:${REF_NAME}\` |"
+            echo "| 版本 | \`${VERSION}\` |"
+            echo "| 提交 | \`${FULL_SHA}\` |"
+            echo "| 镜像仓库 | \`${IMAGE}\` |"
+            echo "| 是否推送 | \`${SHOULD_PUSH}\` |"
+            echo "| 正式发布 | \`${IS_RELEASE}\` |"
+            echo ""
+            echo '```'
+            echo "${TAGS:-（不推送）}"
+            echo '```'
+            echo ""
+            echo "一体化调试镜像（API + H5 同源）："
+            echo ""
+            echo '```'
+            echo "${APP_TAGS:-（不推送）}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ------------------------------------------------------------------
+  # 2. 后端测试（发布前必须通过）
+  # ------------------------------------------------------------------
+  backend-tests:
+    name: 后端测试 / ${{ matrix.database }}
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: true
+      matrix:
+        database: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: zaima
+          POSTGRES_PASSWORD: zaima
+          POSTGRES_DB: zaima_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zaima -d zaima_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TEST_DATABASE_URL: ${{ matrix.database == 'postgres' && 'postgresql+psycopg://zaima:zaima@localhost:5432/zaima_test' || '' }}
+      DATABASE_URL: postgresql+psycopg://zaima:zaima@localhost:5432/zaima_test
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: 配置 Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: 安装依赖
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Alembic 迁移往返（postgres）
+        if: matrix.database == 'postgres'
+        working-directory: backend
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+          alembic current
+
+      - name: 运行测试
+        working-directory: backend
+        run: pytest -q --junitxml=pytest-${{ matrix.database }}.xml
+
+      - name: 上传测试报告
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pytest-report-${{ needs.meta.outputs.version }}-${{ matrix.database }}
+          path: backend/pytest-${{ matrix.database }}.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ------------------------------------------------------------------
+  # 3. 前端检查
+  # ------------------------------------------------------------------
+  frontend-checks:
+    name: 前端检查
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装依赖（严格按锁文件）
+        run: npm ci --registry=https://registry.npmjs.org --no-audit --no-fund
+
+      - name: TypeScript 类型检查
+        run: npm run type-check
+
+      - name: ESLint（未配置则跳过）
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.lint ? 0 : 1)"; then
+            npm run lint
+          else
+            echo "::notice title=Lint 未配置::package.json 中没有 lint 脚本，本步骤跳过"
+          fi
+
+      - name: 前端测试（未配置则跳过）
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then
+            npm run test
+          else
+            echo "::notice title=前端测试未配置::package.json 中没有 test 脚本，本步骤跳过"
+          fi
+
+  # ------------------------------------------------------------------
+  # 4. 前端三平台产物
+  # ------------------------------------------------------------------
+  frontend-artifacts:
+    name: 前端构建与产物上传
+    needs: [meta, frontend-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      VITE_APP_VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装依赖
+        run: npm ci --registry=https://registry.npmjs.org --no-audit --no-fund
+
+      - name: 构建 H5
+        if: ${{ vars.BUILD_H5 != 'false' }}
+        run: npm run build:h5
+
+      - name: 构建微信小程序
+        if: ${{ vars.BUILD_MP_WEIXIN != 'false' }}
+        run: npm run build:mp-weixin
+
+      - name: 构建支付宝小程序
+        if: ${{ vars.BUILD_MP_ALIPAY != 'false' }}
+        run: npm run build:mp-alipay
+
+      - name: 校验产物与敏感信息
+        run: |
+          set -euo pipefail
+          for p in h5 mp-weixin mp-alipay; do
+            if [ -d "dist/build/$p" ]; then
+              echo "== $p: $(find dist/build/$p -type f | wc -l) 个文件"
+            fi
+          done
+          test -f dist/build/h5/index.html
+          test -f dist/build/mp-weixin/app.json
+          test -f dist/build/mp-alipay/app.json
+          if find dist/build -maxdepth 1 -name '.env*' | grep -q .; then
+            echo "::error::产物目录中发现 .env 文件"
+            exit 1
+          fi
+          if find dist/build -name '.env*' | grep -q .; then
+            echo "::error::产物中发现 .env 文件"
+            exit 1
+          fi
+          echo "产物校验通过，未发现 .env 文件"
+
+      - name: 上传 H5 产物
+        if: ${{ vars.BUILD_H5 != 'false' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zaima-frontend-h5-${{ needs.meta.outputs.version }}-${{ needs.meta.outputs.short_sha }}
+          path: frontend/dist/build/h5
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: 上传微信小程序产物
+        if: ${{ vars.BUILD_MP_WEIXIN != 'false' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zaima-frontend-mp-weixin-${{ needs.meta.outputs.version }}-${{ needs.meta.outputs.short_sha }}
+          path: frontend/dist/build/mp-weixin
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: 上传支付宝小程序产物
+        if: ${{ vars.BUILD_MP_ALIPAY != 'false' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zaima-frontend-mp-alipay-${{ needs.meta.outputs.version }}-${{ needs.meta.outputs.short_sha }}
+          path: frontend/dist/build/mp-alipay
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Android / iOS 构建能力检查
+        run: |
+          echo "::notice title=App 原生构建未配置::uni-app 的 Android/iOS 安装包需要 HBuilderX 云打包或离线原生工程 + 签名证书，当前仓库未配置，本流程不产出 ipa/apk（H5 产物不能代替原生安装包）。"
+
+  # ------------------------------------------------------------------
+  # 5. Docker 镜像构建与条件推送
+  # ------------------------------------------------------------------
+  docker:
+    name: 镜像构建与发布
+    needs: [meta, backend-tests, frontend-checks, frontend-artifacts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      IMAGE: ${{ needs.meta.outputs.image }}
+      SHOULD_PUSH: ${{ needs.meta.outputs.should_push }}
+      HAS_DOCKER_CONFIG: ${{ needs.meta.outputs.has_docker_config }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: 配置 Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # 缺少凭据时必须明确失败，而不是静默跳过发布
+      - name: 发布前置校验（凭据）
+        if: needs.meta.outputs.should_push == 'true'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME || vars.DOCKER_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN || secrets.DOCKER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=0
+          if [ -z "${DOCKERHUB_USERNAME}" ]; then
+            echo "::error title=缺少 DOCKERHUB_USERNAME::请在 Repository secrets 配置 DOCKERHUB_USERNAME（或 Repository variables 配置 DOCKER_USERNAME）"
+            missing=1
+          fi
+          if [ -z "${DOCKERHUB_TOKEN}" ]; then
+            echo "::error title=缺少 DOCKERHUB_TOKEN::请在 Repository secrets 配置 DOCKERHUB_TOKEN（Docker Hub Access Token，注意不要使用登录密码）"
+            missing=1
+          fi
+          if [ "${HAS_DOCKER_CONFIG}" != "true" ]; then
+            echo "::error title=缺少 DOCKER_REPOSITORY::请在 Repository variables 配置 DOCKER_REPOSITORY，例如 liaozhiming/zaima-api"
+            missing=1
+          fi
+          if [ "${missing}" -ne 0 ]; then
+            exit 1
+          fi
+          echo "凭据校验通过，镜像仓库：${IMAGE}"
+
+      # 正式版本默认不可变：已存在的版本标签禁止覆盖
+      - name: 正式版本不可变校验
+        if: needs.meta.outputs.should_push == 'true' && needs.meta.outputs.is_release == 'true'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME || vars.DOCKER_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN || secrets.DOCKER_PASSWORD }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          FORCE: ${{ inputs.force_tag }}
+        run: |
+          set -euo pipefail
+          if [ "${FORCE}" = "true" ]; then
+            echo "::warning title=允许覆盖版本标签::force_tag=true，将覆盖 ${IMAGE}:${VERSION}"
+            exit 0
+          fi
+          echo "${DOCKERHUB_TOKEN}" | docker login "${REGISTRY}" -u "${DOCKERHUB_USERNAME}" --password-stdin
+          if docker buildx imagetools inspect "${IMAGE}:${VERSION}" > /dev/null 2>&1; then
+            echo "::error title=版本标签已存在::${IMAGE}:${VERSION} 已存在，正式版本不可覆盖。如确需重发，请手动触发并勾选 force_tag。"
+            exit 1
+          fi
+          echo "标签 ${VERSION} 未被占用，可以发布"
+
+      - name: 登录 Docker Hub
+        if: needs.meta.outputs.should_push == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME || vars.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN || secrets.DOCKER_PASSWORD }}
+
+      - name: 构建并推送镜像
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: ${{ needs.meta.outputs.should_push == 'true' }}
+          tags: ${{ needs.meta.outputs.tags != '' && needs.meta.outputs.tags || format('{0}:{1}', needs.meta.outputs.image, needs.meta.outputs.version) }}
+          build-args: |
+            APP_VERSION=${{ needs.meta.outputs.version }}
+            VCS_REF=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.meta.outputs.version }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=zaima-api
+          cache-to: type=gha,scope=zaima-api,mode=max
+          provenance: true
+          sbom: true
+
+      # 一体化调试镜像：API + H5 同源，容器启动即可在浏览器打开页面
+      - name: 构建并推送一体化镜像（API + H5）
+        id: build_app
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Dockerfile.app
+          push: ${{ needs.meta.outputs.should_push == 'true' }}
+          tags: ${{ needs.meta.outputs.app_tags != '' && needs.meta.outputs.app_tags || format('{0}:{1}-app', needs.meta.outputs.image, needs.meta.outputs.version) }}
+          build-args: |
+            APP_VERSION=${{ needs.meta.outputs.version }}
+            VCS_REF=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.meta.outputs.version }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=zaima-app
+          cache-to: type=gha,scope=zaima-app,mode=max
+          provenance: true
+          sbom: true
+
+      - name: 一体化镜像冒烟（启动后首页与接口均可访问）
+        env:
+          APP_TAGS: ${{ needs.meta.outputs.app_tags }}
+          LOCAL_TAG: zaima-app:smoke
+        run: |
+          set -euo pipefail
+          # 未推送时用本地构建的名字跑冒烟；推送时用刚推上去的 tag
+          if [ -n "${APP_TAGS}" ]; then
+            REF=$(printf '%s\n' "${APP_TAGS}" | head -1)
+            docker pull "${REF}"
+          else
+            REF="${LOCAL_TAG}"
+            docker build -f Dockerfile.app --build-arg APP_VERSION=smoke -t "${REF}" .
+          fi
+          docker run -d --name zaima-app-smoke -p 18080:8000 "${REF}"
+          ok=0
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:18080/api/health > /tmp/health.json 2>/dev/null; then ok=1; break; fi
+            sleep 2
+          done
+          test "${ok}" = "1" || { echo "::error::一体化镜像启动失败"; docker logs zaima-app-smoke; exit 1; }
+          curl -fsS http://127.0.0.1:18080/ -o /tmp/index.html
+          grep -qi "<div id=\"app\"" /tmp/index.html || { echo "::error::首页未返回 H5 入口"; exit 1; }
+          curl -fsS http://127.0.0.1:18080/api/health | tee /tmp/health.json
+          echo "首页与 /api/health 均可访问"
+          docker logs zaima-app-smoke 2>&1 | tail -20 || true
+
+      - name: 输出镜像信息与 Digest
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          APP_DIGEST: ${{ steps.build_app.outputs.digest }}
+          TAGS: ${{ needs.meta.outputs.tags }}
+          APP_TAGS: ${{ needs.meta.outputs.app_tags }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### 镜像"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 镜像 | \`${IMAGE}\` |"
+            echo "| 版本标签 | \`${VERSION}\` |"
+            echo "| 标签列表 | \`$(echo "${TAGS}" | tr '\n' ' ')\` |"
+            echo "| Digest | \`${DIGEST:-未推送}\` |"
+            echo "| 是否推送 | \`${SHOULD_PUSH}\` |"
+            echo ""
+            echo "部署时可固定 Digest：\`${IMAGE}@${DIGEST:-<digest>}\`"
+            echo ""
+            echo "### 一体化调试镜像"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 标签列表 | \`$(echo "${APP_TAGS}" | tr '\n' ' ')\` |"
+            echo "| Digest | \`${APP_DIGEST:-未推送}\` |"
+            echo ""
+            echo "启动后直接访问 \`http://<host>:8000/\` 即可看到 H5；默认 \`APP_ENV=dev\` + SQLite + 模拟邮件，仅用于排查/演示。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          mkdir -p release-manifest
+          cat > release-manifest/image.json <<EOF
+          {
+            "event": "${GITHUB_EVENT_NAME}",
+            "ref": "${GITHUB_REF}",
+            "commit": "${GITHUB_SHA}",
+            "version": "${VERSION}",
+            "image": "${IMAGE}",
+            "tags": $(echo "${TAGS}" | python3 -c 'import sys,json;print(json.dumps([l for l in sys.stdin.read().splitlines() if l.strip()]))'),
+            "digest": "${DIGEST:-}",
+            "appTags": $(echo "${APP_TAGS}" | python3 -c 'import sys,json;print(json.dumps([l for l in sys.stdin.read().splitlines() if l.strip()]))'),
+            "appDigest": "${APP_DIGEST:-}",
+            "pushed": ${SHOULD_PUSH}
+          }
+          EOF
+          cat release-manifest/image.json
+
+      - name: 上传发布清单
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-manifest-${{ needs.meta.outputs.version }}-${{ needs.meta.outputs.short_sha }}
+          path: release-manifest/image.json
+          retention-days: 90
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------
+  # 6. GitHub Release（仅正式 Tag，且镜像推送成功后）
+  # ------------------------------------------------------------------
+  github-release:
+    name: 创建 GitHub Release
+    needs: [meta, docker]
+    if: needs.meta.outputs.is_release == 'true' && needs.meta.outputs.should_push == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.meta.outputs.version }}
+      IMAGE: ${{ needs.meta.outputs.image }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: 创建 Release（已存在则跳过）
+        run: |
+          set -euo pipefail
+          if gh release view "${TAG}" > /dev/null 2>&1; then
+            echo "::notice title=Release 已存在::${TAG} 已发布，保持不可变，跳过创建"
+            exit 0
+          fi
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --generate-notes \
+            --notes "镜像：\`${IMAGE}:${VERSION}\`
+
+          本版本由 GitHub Actions 自动构建，镜像标签与 Git Tag 一一对应。
+          部署时建议使用 Digest 固定版本。" \
+            --verify-tag
+
+  # ------------------------------------------------------------------
+  # 7. 发布报告：把本次运行的关键信息汇总到 Actions 页面
+  # ------------------------------------------------------------------
+  report:
+    name: 发布报告
+    needs: [meta, backend-tests, frontend-checks, frontend-artifacts, docker, github-release]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 写入发布摘要
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          SHORT_SHA: ${{ needs.meta.outputs.short_sha }}
+          IMAGE_NAME: ${{ needs.meta.outputs.image }}
+          SHOULD_PUSH: ${{ needs.meta.outputs.should_push }}
+          IS_RELEASE: ${{ needs.meta.outputs.is_release }}
+          R_META: ${{ needs.meta.result }}
+          R_BACKEND: ${{ needs.backend-tests.result }}
+          R_FRONTEND: ${{ needs.frontend-checks.result }}
+          R_ARTIFACTS: ${{ needs.frontend-artifacts.result }}
+          R_DOCKER: ${{ needs.docker.result }}
+          R_RELEASE: ${{ needs.github-release.result }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## 在吗 · 发布报告"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 触发事件 | \`${GITHUB_EVENT_NAME}\` |"
+            echo "| 分支 / Tag | \`${GITHUB_REF_TYPE}:${GITHUB_REF_NAME}\` |"
+            echo "| 完整提交 SHA | \`${GITHUB_SHA}\` |"
+            echo "| 版本 | \`${VERSION}\` |"
+            echo "| 正式发布 | \`${IS_RELEASE}\` |"
+            echo ""
+            echo "### 检查结果"
+            echo ""
+            echo "| 阶段 | 结果 |"
+            echo "| --- | --- |"
+            echo "| 版本计算 | ${R_META} |"
+            echo "| 后端测试 | ${R_BACKEND} |"
+            echo "| 前端检查 | ${R_FRONTEND} |"
+            echo "| 前端产物 | ${R_ARTIFACTS} |"
+            echo "| 镜像构建/推送 | ${R_DOCKER} |"
+            echo "| GitHub Release | ${R_RELEASE} |"
+            echo ""
+            echo "### 产物"
+            echo ""
+            echo "| 类型 | 名称 |"
+            echo "| --- | --- |"
+            echo "| Artifact | \`zaima-frontend-h5-${VERSION}-${SHORT_SHA}\` |"
+            echo "| Artifact | \`zaima-frontend-mp-weixin-${VERSION}-${SHORT_SHA}\` |"
+            echo "| Artifact | \`zaima-frontend-mp-alipay-${VERSION}-${SHORT_SHA}\` |"
+            echo "| Artifact | \`image-manifest-${VERSION}-${SHORT_SHA}\` |"
+            echo "| 镜像 | \`${IMAGE_NAME}:${VERSION}\`（是否推送：\`${SHOULD_PUSH}\`） |"
+            echo ""
+            echo "> 详细镜像标签与 Digest 见上一步「镜像构建与发布」的摘要。"
+            echo "> 只有全部阶段为 \`success\`（跳过项显示 \`skipped\`）时，本次发布才算完成。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 判定整体结果
+        run: |
+          set -euo pipefail
+          failed=""
+          for entry in \
+            "版本计算:${{ needs.meta.result }}" \
+            "后端测试:${{ needs.backend-tests.result }}" \
+            "前端检查:${{ needs.frontend-checks.result }}" \
+            "前端产物:${{ needs.frontend-artifacts.result }}" \
+            "镜像:${{ needs.docker.result }}"; do
+            name="${entry%%:*}"
+            result="${entry##*:}"
+            if [ "${result}" = "failure" ] || [ "${result}" = "cancelled" ]; then
+              failed="${failed} ${name}"
+            fi
+          done
+          if [ -n "${failed}" ]; then
+            echo "::error title=发布未完成::失败阶段:${failed}"
+            exit 1
+          fi
+          echo "全部阶段成功"

@@ -1,0 +1,94 @@
+/* 全局样式与通用类。仅在 App.vue 中引入一次。 */
+
+page {
+  background-color: $zm-bg;
+  color: $zm-text;
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', 'Microsoft YaHei',
+    sans-serif;
+  font-size: $zm-font-md;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+view,
+text,
+input,
+button,
+scroll-view {
+  box-sizing: border-box;
+}
+
+.zm-page {
+  min-height: 100vh;
+  background-color: $zm-bg;
+  padding: 0 $zm-space-lg;
+}
+
+.zm-page--tabbar {
+  padding-bottom: calc(180rpx + env(safe-area-inset-bottom));
+}
+
+.zm-card {
+  background-color: $zm-surface;
+  border-radius: $zm-radius-lg;
+  padding: $zm-space-lg;
+  box-shadow: $zm-shadow-card;
+}
+
+.zm-section-title {
+  font-size: $zm-font-sm;
+  color: $zm-text-muted;
+  letter-spacing: 2rpx;
+  margin: $zm-space-lg 0 $zm-space-sm;
+  padding-left: $zm-space-xs;
+}
+
+.zm-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.zm-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.zm-text-secondary {
+  color: $zm-text-secondary;
+}
+
+.zm-text-muted {
+  color: $zm-text-muted;
+}
+
+.zm-text-sm {
+  font-size: $zm-font-sm;
+}
+
+.zm-text-xs {
+  font-size: $zm-font-xs;
+}
+
+.zm-divider {
+  height: 1rpx;
+  background-color: $zm-border;
+  margin: $zm-space-md 0;
+}
+
+.zm-btn-reset {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  line-height: normal;
+  font-size: inherit;
+
+  &::after {
+    border: none;
+  }
+}
+
+.zm-safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}

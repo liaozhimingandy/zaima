@@ -1,0 +1,48 @@
+{
+  "easycom": {
+    "autoscan": true
+  },
+  "pages": [
+    {
+      "path": "pages/index/index",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "在吗",
+        "backgroundColor": "#F4F5F7",
+        "enablePullDownRefresh": false
+      }
+    },
+    {
+      "path": "pages/history/index",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "确认记录",
+        "backgroundColor": "#F4F5F7"
+      }
+    },
+    {
+      "path": "pages/settings/index",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "我的",
+        "backgroundColor": "#F4F5F7"
+      }
+    },
+    {
+      "path": "pages/guardians/edit",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "守护人",
+        "backgroundColor": "#F4F5F7"
+      }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "在吗",
+    "navigationBarBackgroundColor": "#F4F5F7",
+    "backgroundColor": "#F4F5F7",
+    "backgroundColorTop": "#F4F5F7",
+    "backgroundColorBottom": "#F4F5F7"
+  }
+}

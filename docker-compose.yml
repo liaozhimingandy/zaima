@@ -1,0 +1,82 @@
+services:
+  # db:
+  #   image: postgres:18.3
+  #   container_name: dev-zaima-db-01
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: zaima
+  #     POSTGRES_PASSWORD: zaima
+  #     POSTGRES_DB: zaima
+  #     TZ: UTC
+  #   ports:
+  #     - "55432:5432"
+  #   volumes:
+  #     - zaima_pgdata:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U zaima -d zaima"]
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 12
+
+  api:
+    build:
+      context: ./backend
+    container_name: dev-zaima-api-01
+    restart: unless-stopped
+    # depends_on:
+    #   db:
+    #     condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      DEBUG: ${DEBUG:-true}
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@192.168.0.105:5432/zaima
+      AUTO_CREATE_TABLES: ${AUTO_CREATE_TABLES:-false}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      EMAIL_ADAPTER: ${EMAIL_ADAPTER:-mock}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-no-reply@example.com}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-在吗}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
+      SCHEDULER_INTERVAL_SECONDS: ${SCHEDULER_INTERVAL_SECONDS:-60}
+      ALLOW_TIME_TRAVEL: ${ALLOW_TIME_TRAVEL:-true}
+    ports:
+      - "8099:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health').read()\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # 一体化调试容器：API + H5 同源，启动后直接访问 http://localhost:8098/ 即可看到页面
+  # 默认 APP_ENV=dev + SQLite + 模拟邮件，仅用于排查问题，不要用于生产
+  # 端口只绑定回环地址，避免同一局域网/公网的其他机器直接打开页面
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.app
+    container_name: dev-zaima-app-01
+    restart: unless-stopped
+    environment:
+      STATIC_DIR: /app/static
+      DATABASE_URL: sqlite+pysqlite:////data/zaima.db
+      EMAIL_MOCK_DIR: /data/mailbox
+    ports:
+      - "127.0.0.1:8098:8000"
+    volumes:
+      - zaima_appdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health').read()\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  zaima_pgdata:
+  zaima_appdata:
