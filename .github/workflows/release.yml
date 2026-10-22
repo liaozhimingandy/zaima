@@ -416,17 +416,17 @@ jobs:
       - name: 发布前置校验（凭据）
         if: needs.meta.outputs.should_push == 'true'
         env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME || vars.DOCKER_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN || secrets.DOCKER_PASSWORD }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME || vars.DOCKER_USERNAME }}
+          DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN || secrets.DOCKER_PASSWORD }}
         run: |
           set -euo pipefail
           missing=0
-          if [ -z "${DOCKERHUB_USERNAME}" ]; then
-            echo "::error title=缺少 DOCKERHUB_USERNAME::请在 Repository secrets 配置 DOCKERHUB_USERNAME（或 Repository variables 配置 DOCKER_USERNAME）"
+          if [ -z "${DOCKER_USERNAME}" ]; then
+            echo "::error title=缺少 DOCKER_USERNAME::请在 Repository secrets 配置 DOCKER_USERNAME（或 Repository variables 配置 DOCKER_USERNAME）"
             missing=1
           fi
-          if [ -z "${DOCKERHUB_TOKEN}" ]; then
-            echo "::error title=缺少 DOCKERHUB_TOKEN::请在 Repository secrets 配置 DOCKERHUB_TOKEN（Docker Hub Access Token，注意不要使用登录密码）"
+          if [ -z "${DOCKER_TOKEN}" ]; then
+            echo "::error title=缺少 DOCKER_TOKEN::请在 Repository secrets 配置 DOCKER_TOKEN（Docker Hub Access Token，注意不要使用登录密码）"
             missing=1
           fi
           if [ "${HAS_DOCKER_CONFIG}" != "true" ]; then
@@ -442,8 +442,8 @@ jobs:
       - name: 正式版本不可变校验
         if: needs.meta.outputs.should_push == 'true' && needs.meta.outputs.is_release == 'true'
         env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME || vars.DOCKER_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN || secrets.DOCKER_PASSWORD }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME || vars.DOCKER_USERNAME }}
+          DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN || secrets.DOCKER_PASSWORD }}
           VERSION: ${{ needs.meta.outputs.version }}
           FORCE: ${{ inputs.force_tag }}
         run: |
@@ -452,7 +452,7 @@ jobs:
             echo "::warning title=允许覆盖版本标签::force_tag=true，将覆盖 ${IMAGE}:${VERSION}"
             exit 0
           fi
-          echo "${DOCKERHUB_TOKEN}" | docker login "${REGISTRY}" -u "${DOCKERHUB_USERNAME}" --password-stdin
+          echo "${DOCKER_TOKEN}" | docker login "${REGISTRY}" -u "${DOCKER_USERNAME}" --password-stdin
           if docker buildx imagetools inspect "${IMAGE}:${VERSION}" > /dev/null 2>&1; then
             echo "::error title=版本标签已存在::${IMAGE}:${VERSION} 已存在，正式版本不可覆盖。如确需重发，请手动触发并勾选 force_tag。"
             exit 1
@@ -464,8 +464,8 @@ jobs:
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.DOCKERHUB_USERNAME || vars.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN || secrets.DOCKER_PASSWORD }}
+          username: ${{ secrets.DOCKER_USERNAME || vars.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN || secrets.DOCKER_PASSWORD }}
 
       - name: 构建并推送镜像
         id: build
