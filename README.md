@@ -174,6 +174,7 @@ MSYS_NO_PATHCONV=1 docker exec dev-zaima-app-01 python -c "import sqlite3;print(
 邮件与调度排查要点：
 
 - `/data/mailbox` 由应用在启动时创建（`EMAIL_ADAPTER=mock` 时）；**没有发过邮件之前也可能为空目录**，属正常。
+- 若脚本第 2 步报 `BAD_REQUEST / There was an error parsing the body`：是终端编码问题（Windows 控制台代码页 936 把中文按 GBK 转码，服务端按 UTF-8 解析失败）。脚本已把请求体改成 stdin 管道传递；仍失败时用 `chcp 65001` 或 `LANG=C.UTF-8 bash scripts/dev-mail-test.sh`。
 - 邮件任务在 `notification_record` 表里，接口 `GET /api/dev/notifications` 可直接看状态（`pending/sent/failed/cancelled`）与 `lastError`。
 - 一次异常事件只会给**事件创建时已存在**的守护人发信；事件创建后再加守护人不会补发。
 - 账户点「我在」恢复正常后，未发出的任务会被置为 `cancelled`。

@@ -8,6 +8,10 @@
 #   CONTAINER=my-container scripts/dev-mail-test.sh       # 顺便导出容器内的邮件
 #
 # 原理：利用 dev 环境的 X-Debug-Now 请求头「伪造当前时间」，不用真的等 24 小时。
+#
+# 编码提示：脚本里的中文请求体一律通过 stdin 管道传给 curl，不放在命令行参数里。
+# Windows 版 curl.exe 收到命令行参数时可能按本机代码页（GBK/936）重新编码，
+# 导致服务端按 UTF-8 解析失败并返回 BAD_REQUEST（"error parsing the body"）。
 
 set -euo pipefail
 
@@ -31,6 +35,38 @@ fail() { printf '\n\033[31m失败：%s\033[0m\n' "$*" >&2; exit 1; }
 jget() { sed -n "s/.*\"$1\":\"\\([^\"]*\\)\".*/\\1/p" | head -1; }
 jnum() { sed -n "s/.*\"$1\":\\([0-9]*\\).*/\\1/p" | head -1; }
 
+# 关键：请求体通过 stdin 管道传给 curl，绝不放到命令行参数里。
+# Windows 版 curl.exe 收到 argv 时会按本机代码页（常见 GBK/936）重新编码，
+# 于是「妈妈」的 UTF-8 字节被转成 GBK，服务端按 UTF-8 解析失败，
+# 报 {"code":"BAD_REQUEST","message":"There was an error parsing the body"}。
+post_json() {
+  local url="$1" auth="$2" body="$3"
+  if [ -n "$auth" ]; then
+    printf '%s' "$body" | curl -sS --noproxy '*' -X POST "$url" \
+      -H "$auth" -H 'Content-Type: application/json' --data-binary @-
+  else
+    printf '%s' "$body" | curl -sS --noproxy '*' -X POST "$url" \
+      -H 'Content-Type: application/json' --data-binary @-
+  fi
+}
+
+# 解析失败时给出可操作提示，而不是只抛原文
+check_ok() {
+  local response="$1" step="$2"
+  case "$response" in
+    *'"code":"OK"'*) return 0 ;;
+    *BAD_REQUEST*)
+      printf '%s\n' "$response"
+      fail "$step 请求体解析失败。多为终端编码不是 UTF-8（Windows 控制台常见 GBK/936）。
+  本脚本已改用 stdin 传 body；若仍失败，请检查：LANG=${LANG:-未设置}，终端代码页可用 chcp 65001 切到 UTF-8。"
+      ;;
+    *)
+      printf '%s\n' "$response"
+      fail "$step 失败"
+      ;;
+  esac
+}
+
 pretty() {
   if command -v python >/dev/null 2>&1; then python -m json.tool 2>/dev/null || cat
   elif command -v python3 >/dev/null 2>&1; then python3 -m json.tool 2>/dev/null || cat
@@ -43,33 +79,34 @@ HEALTH=$(curl -sS --noproxy '*' "$BASE/api/health") || fail "无法连接 $BASE�
 printf '%s' "$HEALTH" | pretty
 printf '%s' "$HEALTH" | grep -q '"env":"dev"' \
   || fail "当前服务不是 dev 环境：X-Debug-Now 与模拟邮件都不可用（需要 APP_ENV=dev）"
+info "客户端: $(curl --version 2>/dev/null | head -1 | cut -d' ' -f1-3)；LANG=${LANG:-未设置} LC_ALL=${LC_ALL:-未设置}"
 
 say "1/5 创建匿名账户（时区 Asia/Shanghai）"
-INIT=$(curl -sS --noproxy '*' -X POST "$BASE/api/account/init" \
-  -H 'Content-Type: application/json' \
-  -d "{\"initKey\":\"dev-mail-$RUN_ID\",\"platform\":\"dev-script\",\"timezone\":\"Asia/Shanghai\"}")
+INIT=$(post_json "$BASE/api/account/init" "" \
+  "{\"initKey\":\"dev-mail-$RUN_ID\",\"platform\":\"dev-script\",\"timezone\":\"Asia/Shanghai\"}")
+check_ok "$INIT" "创建账户"
 TOKEN=$(printf '%s' "$INIT" | jget accessToken)
-[ -n "$TOKEN" ] || { printf '%s\n' "$INIT"; fail "创建账户失败"; }
+[ -n "$TOKEN" ] || fail "创建账户失败，未拿到 accessToken"
 AUTH="Authorization: Bearer $TOKEN"
 info "accountId = $(printf '%s' "$INIT" | jget accountId)"
 
 say "2/5 添加守护人：$GUARDIAN_NAME <$GUARDIAN_EMAIL>"
-ADD=$(curl -sS --noproxy '*' -X POST "$BASE/api/guardians" -H "$AUTH" \
-  -H 'Content-Type: application/json' \
-  -d "{\"name\":\"$GUARDIAN_NAME\",\"email\":\"$GUARDIAN_EMAIL\"}")
-printf '%s' "$ADD" | grep -q '"code":"OK"' || { printf '%s\n' "$ADD"; fail "添加守护人失败"; }
+ADD=$(post_json "$BASE/api/guardians" "$AUTH" \
+  "{\"name\":\"$GUARDIAN_NAME\",\"email\":\"$GUARDIAN_EMAIL\"}")
+check_ok "$ADD" "添加守护人"
 info "ok"
 
 say "3/5 在 $CHECKIN_AT 点「我在」"
-CHECKIN=$(curl -sS --noproxy '*' -X POST "$BASE/api/checkin" -H "$AUTH" \
-  -H 'Content-Type: application/json' -H "X-Debug-Now: $CHECKIN_AT" \
-  -d "{\"requestId\":\"dev-checkin-$RUN_ID\"}")
-printf '%s' "$CHECKIN" | grep -q '"code":"OK"' || { printf '%s\n' "$CHECKIN"; fail "确认失败"; }
+CHECKIN=$(printf '%s' "{\"requestId\":\"dev-checkin-$RUN_ID\"}" \
+  | curl -sS --noproxy '*' -X POST "$BASE/api/checkin" -H "$AUTH" \
+    -H 'Content-Type: application/json' -H "X-Debug-Now: $CHECKIN_AT" --data-binary @-)
+check_ok "$CHECKIN" "确认"
 info "下次应确认: $(printf '%s' "$CHECKIN" | jget nextCheckinAt)"
 
 say "4/5 把时间推进到 $SCAN_AT 并触发扫描"
 RUN=$(curl -sS --noproxy '*' -X POST "$BASE/api/dev/scheduler/run" -H "$AUTH" \
   -H "X-Debug-Now: $SCAN_AT")
+check_ok "$RUN" "触发扫描"
 printf '%s' "$RUN" | pretty
 info "本次新建异常事件: $(printf '%s' "$RUN" | jnum alertsCreated)、模拟发送邮件: $(printf '%s' "$RUN" | jnum sent)"
 info "（scan/dispatch 是全库统计，不只统计这个账户）"
