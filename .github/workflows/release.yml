@@ -43,6 +43,7 @@ jobs:
       version: ${{ steps.calc.outputs.version }}
       short_sha: ${{ steps.calc.outputs.short_sha }}
       image: ${{ steps.calc.outputs.image }}
+      app_image: ${{ steps.calc.outputs.app_image }}
       tags: ${{ steps.calc.outputs.tags }}
       app_tags: ${{ steps.calc.outputs.app_tags }}
       should_push: ${{ steps.calc.outputs.should_push }}
@@ -58,6 +59,7 @@ jobs:
           INPUT_PUBLISH: ${{ inputs.publish }}
           INPUT_FORCE: ${{ inputs.force_tag }}
           DOCKER_REPOSITORY: ${{ vars.DOCKER_REPOSITORY }}
+          DOCKER_APP_REPOSITORY: ${{ vars.DOCKER_APP_REPOSITORY }}
           ENABLE_FLOATING_TAGS: ${{ vars.ENABLE_FLOATING_TAGS }}
         run: |
           set -euo pipefail
@@ -137,16 +139,36 @@ jobs:
             fi
           fi
 
-          # 一体化调试镜像（API + H5 同源）在同一仓库加 -app 后缀，避免额外配置一个仓库变量
+          # 测试镜像（API + H5，含 static）：
+          #   推荐配置独立的 DOCKER_APP_REPOSITORY（例如 liaozhiming/zaima-test），标签与版本一一对应；
+          #   未配置时退回「同一仓库 + -app 后缀」，避免必须再建一个 Docker Hub 仓库。
+          APP_REPO="${DOCKER_APP_REPOSITORY:-}"
+          if [ -n "${APP_REPO}" ]; then
+            APP_IMAGE="${APP_REPO}"
+            APP_SUFFIX=""
+          else
+            APP_IMAGE="${IMAGE}"
+            APP_SUFFIX="-app"
+          fi
+
           APP_TAGS=""
-          if [ -n "${TAGS}" ]; then
-            APP_TAGS=$(printf '%s\n' "${TAGS}" | sed 's/$/-app/')
+          if [ "${HAS_CFG}" = "true" ]; then
+            APP_TAGS="${APP_IMAGE}:${VERSION}${APP_SUFFIX}"
+            APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:sha-${FULL_SHA}${APP_SUFFIX}"
+            if [ "${IS_RELEASE}" = "true" ]; then
+              APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:latest${APP_SUFFIX}"
+              if [ "${FLOATING}" = "true" ] && [[ "${VERSION}" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+                APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:${BASH_REMATCH[1]}.${BASH_REMATCH[2]}${APP_SUFFIX}"
+                APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:${BASH_REMATCH[1]}${APP_SUFFIX}"
+              fi
+            fi
           fi
 
           {
             echo "version=${VERSION}"
             echo "short_sha=${SHORT_SHA}"
             echo "image=${IMAGE}"
+            echo "app_image=${APP_IMAGE}"
             echo "should_push=${SHOULD_PUSH}"
             echo "is_release=${IS_RELEASE}"
             echo "has_docker_config=${HAS_CFG}"
@@ -175,7 +197,7 @@ jobs:
             echo "${TAGS:-（不推送）}"
             echo '```'
             echo ""
-            echo "一体化调试镜像（API + H5 同源）："
+            echo "测试镜像（API + H5，含 /app/static，仅用于测试/演示）："
             echo ""
             echo '```'
             echo "${APP_TAGS:-（不推送）}"
@@ -495,7 +517,7 @@ jobs:
           context: .
           file: ./Dockerfile.app
           push: ${{ needs.meta.outputs.should_push == 'true' }}
-          tags: ${{ needs.meta.outputs.app_tags != '' && needs.meta.outputs.app_tags || format('{0}:{1}-app', needs.meta.outputs.image, needs.meta.outputs.version) }}
+          tags: ${{ needs.meta.outputs.app_tags != '' && needs.meta.outputs.app_tags || format('{0}:{1}-app', needs.meta.outputs.app_image, needs.meta.outputs.version) }}
           build-args: |
             APP_VERSION=${{ needs.meta.outputs.version }}
             VCS_REF=${{ github.sha }}
@@ -522,6 +544,9 @@ jobs:
             REF="${LOCAL_TAG}"
             docker build -f Dockerfile.app --build-arg APP_VERSION=smoke -t "${REF}" .
           fi
+          # 测试镜像必须带前端产物
+          docker run --rm --entrypoint sh "${REF}" -c 'test -f /app/static/index.html' \
+            || { echo "::error::测试镜像缺少 /app/static/index.html"; exit 1; }
           docker run -d --name zaima-app-smoke -p 18080:8000 "${REF}"
           ok=0
           for i in $(seq 1 40); do
@@ -534,6 +559,22 @@ jobs:
           curl -fsS http://127.0.0.1:18080/api/health | tee /tmp/health.json
           echo "首页与 /api/health 均可访问"
           docker logs zaima-app-smoke 2>&1 | tail -20 || true
+
+      # 推完后回头验证：生产镜像里绝不能有前端产物
+      - name: 校验生产镜像不含前端
+        if: needs.meta.outputs.should_push == 'true'
+        env:
+          TAGS: ${{ needs.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          REF=$(printf '%s\n' "${TAGS}" | head -1)
+          docker pull "${REF}"
+          docker run --rm --entrypoint sh "${REF}" -c '
+            test ! -d /app/static || { echo "::error::生产镜像不应包含 /app/static"; exit 1; }
+            n=$(find / -name "index.html" -not -path "*/site-packages/*" 2>/dev/null | wc -l)
+            test "$n" -eq 0 || { echo "::error::生产镜像内发现 index.html"; exit 1; }
+          '
+          echo "✓ 生产镜像 ${REF} 不含任何前端文件"
 
       - name: 输出镜像信息与 Digest
         env:

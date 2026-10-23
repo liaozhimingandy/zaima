@@ -127,6 +127,13 @@ npm run build:h5          # 生产构建
 两者共用同一份 `requirements.txt`，体积压缩手段：alpine 基础镜像、不装 `uvicorn[standard]` 的 uvloop/watchfiles/websockets、
 `pip --no-compile`、装完卸载 pip/setuptools/wheel。原来基于 `python:3.13-slim` 时两者都是 209 MB。
 
+`docker-compose.yml` 里两个服务正好对应这两种镜像：
+
+| 服务 | 镜像 | 端口 | 说明 |
+| --- | --- | --- | --- |
+| `api` | `zaima-api:local`（`backend/Dockerfile`） | `127.0.0.1:8099` | 生产形态，`/` 只返回 JSON，`/app/static` 不存在 |
+| `app` | `zaima-app:local`（`Dockerfile.app`） | `127.0.0.1:8098` | 测试形态，`/` 直接打开 H5 |
+
 ### 5. 一步启动调试镜像（排查问题 / 演示用）
 
 不需要装 Node、Python、数据库：镜像内已包含 API + H5，**容器起来就能在浏览器看到页面**。

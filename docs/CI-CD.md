@@ -65,6 +65,8 @@ report          (always，汇总结果；任一失败则本 job 失败)
 | API（`backend/Dockerfile`） | 不含 `/app/static`、镜像内无 `index.html`、`GET /` 必须返回 JSON |
 | 调试（`Dockerfile.app`） | 必须存在 `/app/static/index.html`、`GET /` 返回 HTML 且含 `<div id="app">` |
 
+`release.yml` 在**推送之后**还会回拉镜像再校验一次（`should_push=true` 时）：生产镜像若出现 `/app/static` 或任何 `index.html`，直接失败。
+
 两者都会把镜像体积写进本次运行的 Summary，体积异常增大时能从 CI 页面直接看到。
 
 PR 里也跑一次 H5 构建，是为了让「能不能编译」在合并前暴露，而不是等到发布时才发现。
@@ -101,7 +103,8 @@ report（always）
 
 | 名称 | 必填 | 示例 | 说明 |
 | --- | --- | --- | --- |
-| `DOCKER_REPOSITORY` | 是 | `liaozhiming/zaima-api` | 镜像仓库全名（不含 tag） |
+| `DOCKER_REPOSITORY` | 是 | `liaozhiming/zaima-api` | **生产镜像**仓库（纯 API，不含前端） |
+| `DOCKER_APP_REPOSITORY` | 否 | `liaozhiming/zaima-test` | **测试镜像**仓库（含 H5）。不配置时退回「同一仓库 + `-app` 后缀」 |
 | `ENABLE_FLOATING_TAGS` | 否 | `false` | 设为 `true` 才推送 `1.0`、`1` 浮动标签 |
 | `BUILD_H5` / `BUILD_MP_WEIXIN` / `BUILD_MP_ALIPAY` | 否 | `true` | 设为 `false` 可临时跳过某平台构建，用于排查 |
 
@@ -140,12 +143,14 @@ report（always）
 | 手动 publish（main） | `dev-<7位sha>`、`sha-<完整sha>` | 同 push main |
 | PR | 不产生远程标签 | 仅本地 `zaima-api:ci` / `zaima-app:ci` |
 
-一体化调试镜像与 API 镜像**同一仓库**，标签追加 `-app` 后缀（无需额外配置仓库变量）：
+### 两个镜像，标签互不重叠
 
-| 触发 | 一体化镜像标签 |
-| --- | --- |
-| `main` | `dev-<7位sha>-app`、`sha-<完整sha>-app` |
-| `v1.2.3` | `1.2.3-app`、`sha-...-app`、`latest-app` |
+| 镜像 | 内容 | 标签（配了 `DOCKER_APP_REPOSITORY`） | 标签（未配置时） |
+| --- | --- | --- | --- |
+| 生产 | 纯 API，**无前端** | `<DOCKER_REPOSITORY>:1.2.3` / `:sha-<sha>` / `:latest` | 同左 |
+| 测试 | API + H5（含 `/app/static`） | `<DOCKER_APP_REPOSITORY>:1.2.3` / `:sha-<sha>` / `:latest` | `<DOCKER_REPOSITORY>:1.2.3-app` 等 |
+
+推荐给测试镜像单独建仓库（`zaima-test`），这样 `docker pull` 时不会拿错；两个仓库的标签完全对称，版本一一对应。
 
 规则：
 
@@ -355,6 +360,8 @@ actionlint
 | 手动 `publish=true`（feature/x） | — | — | — | **失败**，提示只允许 main / Tag |
 | 手动 `publish=true`（tag `v2.1.3`） | `2.1.3` | true | true | `2.1.3`、`sha-…`、`latest` |
 | 未配置 `DOCKER_REPOSITORY` | `dev-3f8a1b2` | true | false | 镜像名回退为 `zaima-api`，凭据校验步骤**报错退出** |
+| 配置了 `DOCKER_APP_REPOSITORY`（main） | `dev-3f8a1b2` | true | false | 测试镜像推到独立仓库：`zaima-test:dev-3f8a1b2`、`zaima-test:sha-…` |
+| 配置了 `DOCKER_APP_REPOSITORY`（tag） | `1.2.3` | true | true | `zaima-test:1.2.3`、`:sha-…`、`:latest` |
 
 ---
 
