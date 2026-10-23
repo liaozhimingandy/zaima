@@ -19,8 +19,9 @@ services:
   #     retries: 12
 
   api:
-    build:
-      context: ./backend
+    # build:
+    #   context: ./backend
+    image: liaozhiming/zaima-api:dev-73fe26e-app
     container_name: dev-zaima-api-01
     restart: unless-stopped
     # depends_on:
@@ -44,6 +45,7 @@ services:
       SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
       SCHEDULER_INTERVAL_SECONDS: ${SCHEDULER_INTERVAL_SECONDS:-60}
       ALLOW_TIME_TRAVEL: ${ALLOW_TIME_TRAVEL:-true}
+      STATIC_ACCESS_KEY: ${STATIC_ACCESS_KEY:-demo}
     ports:
       - "8099:8000"
     healthcheck:

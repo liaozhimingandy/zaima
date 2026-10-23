@@ -34,6 +34,13 @@ async def lifespan(_: FastAPI):
         init_db()
     except Exception as exc:  # noqa: BLE001 - 数据库不可用时仍提供健康检查
         logger.error("数据库初始化失败：%s", exc)
+    # 模拟邮件目录在启动时建好，避免"发第一封邮件前目录不存在"造成的排查困惑
+    if settings.EMAIL_ADAPTER == "mock":
+        try:
+            Path(settings.EMAIL_MOCK_DIR).expanduser().mkdir(parents=True, exist_ok=True)
+            logger.info("模拟邮件目录：%s", settings.EMAIL_MOCK_DIR)
+        except OSError as exc:
+            logger.warning("无法创建模拟邮件目录 %s：%s", settings.EMAIL_MOCK_DIR, exc)
     if settings.SCHEDULER_ENABLED:
         scheduler.start()
     else:

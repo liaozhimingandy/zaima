@@ -81,7 +81,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --create-home --shell /usr/sbin/nologin app \
-    && mkdir -p /data /app/static \
+    && mkdir -p /data/mailbox /app/static \
     && chown -R app:app /data /app
 
 WORKDIR /app

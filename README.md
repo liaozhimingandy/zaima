@@ -153,16 +153,30 @@ docker run --rm -p 8098:8000 zaima-app:local
 排查技巧：
 
 ```bash
-# 模拟时间推进，触发提醒/异常事件（需先有账户 token）
+# 一条命令跑完「超时未确认 → 给守护人发邮件」全流程（不用真等 24 小时）
+bash scripts/dev-mail-test.sh
+# 指定地址 / 收件人 / 容器名
+bash scripts/dev-mail-test.sh http://127.0.0.1:8080
+GUARDIAN_EMAIL=me@example.com CONTAINER=dev-zaima-app-01 bash scripts/dev-mail-test.sh
+
+# 手动模拟时间推进，触发提醒/异常事件（需先有账户 token）
 curl -X POST "http://localhost:8098/api/dev/scheduler/run" \
   -H "Authorization: Bearer <token>" -H "X-Debug-Now: 2026-06-03T00:00:00Z"
 
 # 查看"已发送"的邮件
-docker exec dev-zaima-app-01 ls -l /data/mailbox
+# ⚠️ Git Bash / MSYS 会把 /data 转成 Windows 路径，必须加 MSYS_NO_PATHCONV=1
+MSYS_NO_PATHCONV=1 docker exec dev-zaima-app-01 ls -l /data/mailbox
 
 # 直接查数据库（镜像内没有 sqlite3 CLI，用 Python 标准库）
-docker exec dev-zaima-app-01 python -c "import sqlite3;print(sqlite3.connect('/data/zaima.db').execute('select count(*) from checkin_record').fetchone())"
+MSYS_NO_PATHCONV=1 docker exec dev-zaima-app-01 python -c "import sqlite3;print(sqlite3.connect('/data/zaima.db').execute('select count(*) from checkin_record').fetchone())"
 ```
+
+邮件与调度排查要点：
+
+- `/data/mailbox` 由应用在启动时创建（`EMAIL_ADAPTER=mock` 时）；**没有发过邮件之前也可能为空目录**，属正常。
+- 邮件任务在 `notification_record` 表里，接口 `GET /api/dev/notifications` 可直接看状态（`pending/sent/failed/cancelled`）与 `lastError`。
+- 一次异常事件只会给**事件创建时已存在**的守护人发信；事件创建后再加守护人不会补发。
+- 账户点「我在」恢复正常后，未发出的任务会被置为 `cancelled`。
 
 > 生产环境请使用 `backend/Dockerfile`（纯 API 镜像，非 root、无调试接口、不含前端），见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 

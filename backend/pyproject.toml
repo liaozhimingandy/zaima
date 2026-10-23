@@ -9,4 +9,5 @@ testpaths = ["tests"]
 addopts = "-ra"
 filterwarnings = [
     "ignore::DeprecationWarning:starlette.*",
+    "ignore::DeprecationWarning:anyio.*",
 ]
