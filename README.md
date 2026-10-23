@@ -117,7 +117,17 @@ npm run dev:app           # HBuilderX 导入 dist/dev/app
 npm run build:h5          # 生产构建
 ```
 
-### 4. 一步启动（排查问题 / 演示用）
+### 4. 镜像一览（两个镜像，用途不同）
+
+| 镜像 | 构建文件 | 内容 | 体积 | 用途 |
+| --- | --- | --- | --- | --- |
+| **API 服务端** | `backend/Dockerfile` | 只有 Python 运行时 + API，**不含任何前端文件** | **81 MB** | 生产部署 |
+| **调试镜像** | `Dockerfile.app` | API + H5 同源，容器启动即可在浏览器打开页面 | **82 MB** | 排查问题 / 演示 |
+
+两者共用同一份 `requirements.txt`，体积压缩手段：alpine 基础镜像、不装 `uvicorn[standard]` 的 uvloop/watchfiles/websockets、
+`pip --no-compile`、装完卸载 pip/setuptools/wheel。原来基于 `python:3.13-slim` 时两者都是 209 MB。
+
+### 5. 一步启动调试镜像（排查问题 / 演示用）
 
 不需要装 Node、Python、数据库：镜像内已包含 API + H5，**容器起来就能在浏览器看到页面**。
 

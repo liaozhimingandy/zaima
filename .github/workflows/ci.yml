@@ -179,6 +179,17 @@ jobs:
           echo "容器内 uid: $uid"
           test "$uid" != "0"
 
+      # 纯 API 镜像不允许包含任何前端文件（H5 只属于 Dockerfile.app 的调试镜像）
+      - name: 校验 API 镜像不含前端
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh zaima-api:ci -c '
+            test ! -d /app/static || { echo "::error::API 镜像不应包含 /app/static"; exit 1; }
+            n=$(find / -name "index.html" -not -path "*/site-packages/*" 2>/dev/null | wc -l)
+            test "$n" -eq 0 || { echo "::error::API 镜像内发现 index.html"; exit 1; }
+          '
+          echo "API 镜像不含前端文件"
+
       - name: 容器启动冒烟（SQLite）
         run: |
           set -euo pipefail
@@ -197,6 +208,22 @@ jobs:
             sleep 1
           done
           test -s /tmp/health.json
+          # 根路径必须是 JSON（说明没有托管前端）
+          curl -fsS http://127.0.0.1:18000/ -o /tmp/root.json
+          grep -q '"name":"在吗 API"' /tmp/root.json \
+            || { echo "::error::API 镜像的 / 未返回 JSON"; cat /tmp/root.json; exit 1; }
+
+      - name: 记录镜像体积
+        run: |
+          size=$(docker image inspect zaima-api:ci --format '{{.Size}}')
+          human=$(docker images zaima-api:ci --format '{{.Size}}')
+          echo "API 镜像：${human}（${size} bytes）"
+          {
+            echo ""
+            echo "| 镜像 | 体积 |"
+            echo "| --- | --- |"
+            echo "| API（无前端） | ${human} |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 收集容器日志
         if: always()
@@ -246,6 +273,9 @@ jobs:
             docker logs zaima-app-smoke
             exit 1
           fi
+          # 调试镜像必须真的带上前端产物
+          docker run --rm --entrypoint sh zaima-app:ci -c 'test -f /app/static/index.html' \
+            || { echo "::error::调试镜像缺少 /app/static/index.html"; exit 1; }
           curl -fsS http://127.0.0.1:18080/ -o /tmp/index.html
           grep -qi '<div id="app"' /tmp/index.html || { echo "::error::首页未返回 H5 入口"; exit 1; }
           # 静态资源必须可访问，否则页面白屏
@@ -264,6 +294,14 @@ jobs:
       - name: 收集容器日志
         if: always()
         run: docker logs zaima-app-smoke 2>&1 | tail -50 || true
+
+      - name: 记录镜像体积
+        run: |
+          human=$(docker images zaima-app:ci --format '{{.Size}}')
+          echo "调试镜像（API + H5）：${human}"
+          {
+            echo "| 调试镜像（API + H5） | ${human} |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   report:
     name: CI 汇总

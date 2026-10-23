@@ -58,6 +58,15 @@ report          (always，汇总结果；任一失败则本 job 失败)
 
 `app-image` 的存在意义：**验证「容器启动就能在浏览器看到 H5」这件事真的成立**，而不是只在本地手工试过。它会启动容器并断言首页含 `<div id="app">`、首页引用的静态资源能 200 返回。
 
+两个镜像还各有反向断言，防止日后互相污染：
+
+| 镜像 | 断言 |
+| --- | --- |
+| API（`backend/Dockerfile`） | 不含 `/app/static`、镜像内无 `index.html`、`GET /` 必须返回 JSON |
+| 调试（`Dockerfile.app`） | 必须存在 `/app/static/index.html`、`GET /` 返回 HTML 且含 `<div id="app">` |
+
+两者都会把镜像体积写进本次运行的 Summary，体积异常增大时能从 CI 页面直接看到。
+
 PR 里也跑一次 H5 构建，是为了让「能不能编译」在合并前暴露，而不是等到发布时才发现。
 
 ### 3.2 `release.yml`

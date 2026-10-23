@@ -1,5 +1,8 @@
 fastapi==0.115.6
-uvicorn[standard]==0.34.0
+# 只装 uvicorn 核心 + httptools;不装 [standard] 里的 uvloop/watchfiles/websockets/pyyaml,
+# 运行时镜像可少约 20MB(--reload 需要的 watchfiles 已移到 requirements-dev.txt)
+uvicorn==0.34.0
+httptools==0.9.0
 sqlmodel==0.0.22
 SQLAlchemy==2.0.36
 psycopg[binary]==3.2.3

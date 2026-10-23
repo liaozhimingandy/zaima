@@ -11,13 +11,14 @@
 #   # 浏览器打开 http://127.0.0.1:8080/
 #
 # 注意：本镜像默认 APP_ENV=dev + SQLite + 模拟邮件，仅用于调试/演示，不可用于生产。
+# 生产只部署 backend/Dockerfile 的纯 API 镜像（不含前端，体积约 81MB）。
 # 页面托管有三层限制（见 backend/app/main.py::resolve_static_root）：
 #   1. 只有 APP_ENV=dev 才托管；改成 prod 后 / 只返回 JSON，静态资源全 404
 #   2. 只暴露 / 与 /assets/*，不挂载整目录、不开目录列表
 #   3. 运行时请把端口绑到回环：-p 127.0.0.1:8098:8000
 
 ARG NODE_IMAGE=node:22-slim
-ARG PYTHON_IMAGE=python:3.13-slim
+ARG PYTHON_IMAGE=python:3.13-alpine
 
 # ---------------- 1. 构建 H5 ----------------
 FROM ${NODE_IMAGE} AS web
@@ -47,8 +48,18 @@ ENV PIP_NO_CACHE_DIR=1 \
 
 WORKDIR /build
 COPY backend/requirements.txt ./
-RUN python -m venv /opt/venv \
-    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
+
+RUN set -eux; \
+    python -m venv /opt/venv; \
+    /opt/venv/bin/pip install --no-cache-dir --no-compile -r requirements.txt; \
+    # 运行期不需要构建/安装工具
+    /opt/venv/bin/pip uninstall -y pip setuptools wheel >/dev/null 2>&1 || true; \
+    rm -rf /opt/venv/lib/python3*/site-packages/pip* \
+           /opt/venv/lib/python3*/site-packages/setuptools* \
+           /opt/venv/lib/python3*/site-packages/pkg_resources \
+           /opt/venv/lib/python3*/site-packages/wheel*; \
+    find /opt/venv -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true; \
+    find /opt/venv -name '*.pyc' -delete 2>/dev/null || true
 
 # ---------------- 3. 运行镜像 ----------------
 FROM ${PYTHON_IMAGE} AS runtime
@@ -56,8 +67,8 @@ FROM ${PYTHON_IMAGE} AS runtime
 ARG APP_VERSION=dev
 ARG VCS_REF=unknown
 
-LABEL org.opencontainers.image.title="zaima-app" \
-      org.opencontainers.image.description="Zaima all-in-one debug image (API + H5, SQLite, mock email)" \
+LABEL org.opencontainers.image.title="zaima-app-debug" \
+      org.opencontainers.image.description="Zaima all-in-one DEBUG image (API + H5, SQLite, mock email) - not for production" \
       org.opencontainers.image.version="${APP_VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.licenses="MIT"
@@ -79,8 +90,8 @@ ENV PYTHONUNBUFFERED=1 \
     STATIC_DIR=/app/static \
     CORS_ORIGINS=*
 
-RUN groupadd --gid 10001 app \
-    && useradd --uid 10001 --gid app --create-home --shell /usr/sbin/nologin app \
+RUN addgroup -g 10001 -S app \
+    && adduser -u 10001 -S -G app -h /app -s /sbin/nologin app \
     && mkdir -p /data/mailbox /app/static \
     && chown -R app:app /data /app
 

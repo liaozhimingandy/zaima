@@ -67,10 +67,10 @@ curl -fsS http://127.0.0.1:8000/openapi.json | head -c 200
 
 ### 仓库里有两种镜像，不要混用
 
-| 文件 | 产物 | 用途 | 是否可上线 |
-| --- | --- | --- | --- |
-| `backend/Dockerfile` | 纯 API 镜像 | 生产部署（前端由 Nginx/CDN 托管） | ✅ 生产用这个 |
-| `Dockerfile.app` | API + H5 同源合一 | **仅排查问题 / 演示**：容器一启动就能用浏览器打开页面 | ❌ 只用于调试 |
+| 文件 | 产物 | 体积 | 内容 | 用途 |
+| --- | --- | --- | --- | --- |
+| `backend/Dockerfile` | 纯 API 镜像 | **81 MB** | 只有 Python 运行时 + API，**不含任何前端文件** | ✅ 生产用这个（前端由 Nginx/CDN 托管） |
+| `Dockerfile.app` | API + H5 同源合一 | **82 MB** | API + H5（约 0.6 MB 前端产物） | ❌ 仅排查问题 / 演示 |
 
 `Dockerfile.app` 默认 `APP_ENV=dev`（开放 `/docs`、`/api/dev/*`、`X-Debug-Now`）、SQLite、模拟邮件。
 不要把它当生产镜像：调试接口会让任何人触发全量扫描，模拟邮件也不会真的通知到守护人。
