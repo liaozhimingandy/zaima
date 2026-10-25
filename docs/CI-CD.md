@@ -33,14 +33,18 @@
 | 手动 + `publish=true`（main） | `release.yml` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ `dev-<sha>` / `dev-<sha>-app` | ❌ |
 | 手动 + `publish=true`（v* Tag） | `release.yml` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ 正式标签 / 正式标签 `-app` | ✅ |
 | push → `main` | `release.yml` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ `dev-<sha>` / `dev-<sha>-app` | ❌ |
-| push → `v*` Tag | `release.yml` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ `1.2.3` + `sha-<sha>` + `latest`（含 `-app` 变体） | ✅ |
+| push → `v*` Tag | `release.yml` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ `vA.B`/`vA.B.C` 正式标签 + `sha-<sha>` + `latest`（含 `-app` 变体） | ✅ |
 
 约束：
 
 - PR 流程**不读取任何发布 Secrets**（整个工作流只声明 `contents: read`）。
 - PR 流程中镜像 `push: false`，且关闭 attestation（`load: true` 需要）。
 - 手动触发默认 `publish=false`；勾选 publish 时若分支既不是 `main` 也不是 `v*` Tag，**直接失败**并给出原因。
-- Tag 必须匹配 `v<主>.<次>.<修订>`，否则拒绝发布。
+- 版本号采用 **Django 风格**（参考 https://docs.djangoproject.com/en/6.1/internals/release-process/）：
+  - `vA.B` = 功能发布 feature release（如 `v1.0`、`v2.1`）
+  - `vA.B.C` = 补丁发布 patch release（如 `v1.0.1`、`v2.1.3`）
+  - `vA.B(a|b|rc)N` = 预发布 alpha/beta/rc（如 `v1.0a1`、`v1.0rc2`），**不会**占用 `latest`，GitHub Release 标记为 prerelease
+  - 不匹配上述格式的 Tag（如 `v1`、`1.0`、`ver-1.0`）一律拒绝发布。
 
 ---
 
@@ -138,8 +142,10 @@ report（always）
 | 触发 | 标签 | 说明 |
 | --- | --- | --- |
 | push `main` | `dev-<7位sha>`、`sha-<完整sha>` | 开发版本，**不会**写 `latest` |
-| push `v1.2.3` | `1.2.3`、`sha-<完整sha>`、`latest` | 正式版本 |
-| `v1.2.3` + `ENABLE_FLOATING_TAGS=true` | 追加 `1.2`、`1` | 默认关闭 |
+| push `v1.0`（功能发布） | `1.0`、`sha-<完整sha>`、`latest` | 正式版本（A.B） |
+| push `v1.0.1`（补丁发布） | `1.0.1`、`sha-<完整sha>`、`latest` | 正式版本（A.B.C），并滚动更新 `1.0`（见浮动标签） |
+| `v1.0.1` + `ENABLE_FLOATING_TAGS=true` | 追加 `1.0`、`1` | `1.0` 指向该小版本最新补丁；默认关闭 |
+| push `v1.0a1`（预发布） | `1.0a1`、`sha-<完整sha>` | **不**写 `latest`，GitHub Release 标记为 prerelease |
 | 手动 publish（main） | `dev-<7位sha>`、`sha-<完整sha>` | 同 push main |
 | PR | 不产生远程标签 | 仅本地 `zaima-api:ci` / `zaima-app:ci` |
 
@@ -147,8 +153,8 @@ report（always）
 
 | 镜像 | 内容 | 标签（配了 `DOCKER_APP_REPOSITORY`） | 标签（未配置时） |
 | --- | --- | --- | --- |
-| 生产 | 纯 API，**无前端** | `<DOCKER_REPOSITORY>:1.2.3` / `:sha-<sha>` / `:latest` | 同左 |
-| 测试 | API + H5（含 `/app/static`） | `<DOCKER_APP_REPOSITORY>:1.2.3` / `:sha-<sha>` / `:latest` | `<DOCKER_REPOSITORY>:1.2.3-app` 等 |
+| 生产 | 纯 API，**无前端** | `<DOCKER_REPOSITORY>:1.0`（或 `:1.0.1`）/ `:sha-<sha>` / `:latest` | 同左 |
+| 测试 | API + H5（含 `/app/static`） | `<DOCKER_APP_REPOSITORY>:1.0` / `:sha-<sha>` / `:latest` | `<DOCKER_REPOSITORY>:1.0-app` 等 |
 
 推荐给测试镜像单独建仓库（`zaima-test`），这样 `docker pull` 时不会拿错；两个仓库的标签完全对称，版本一一对应。
 
@@ -183,11 +189,15 @@ docker pull <DOCKER_REPOSITORY>:dev-<sha>
 
 ```bash
 git checkout main && git pull
-git tag -a v1.0.0 -m "在吗 V1.0.0"
-git push origin v1.0.0
+git tag -a v1.0 -m "在吗 V1.0（首个功能发布）"
+git push origin v1.0
+# 补丁发布用 vA.B.C：git tag -a v1.0.1 -m "在吗 V1.0.1" && git push origin v1.0.1
+# 预发布用 vA.B(a|b|rc)N：git tag -a v1.1rc1 -m "在吗 V1.1 RC1" && git push origin v1.1rc1
 ```
 
-流水线会：跑全量测试 → 构建三端产物 → 推送 `1.0.0` / `sha-...` / `latest` → 创建 GitHub Release（已存在则跳过）。
+流水线会：跑全量测试 → 构建三端产物 → 推送 `1.0` / `sha-...` / `latest` → 创建 GitHub Release（已存在则跳过）。
+
+> 若某个 Tag 在修复前已推送但发布失败（如早期 `v1.0` 被旧规则拒绝），需**重新推送该 Tag 才会重跑**：先 `git push origin :refs/tags/v1.0` 删除远程旧 Tag，再 `git push origin v1.0`（强制覆盖同名的本地/远程 Tag 可用 `git tag -f v1.0 && git push -f origin v1.0`，注意这会让该 Tag 指向的 commit 不变、只重跑流水线）。
 
 回滚：
 

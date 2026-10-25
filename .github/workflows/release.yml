@@ -2,7 +2,11 @@ name: Release
 
 # 触发：
 # - push 到 main：构建前端产物 + 推送开发镜像 dev-<sha>
-# - push v* Tag：完整发布，推送 1.2.3 / sha-<sha> / latest
+# - push v* Tag：完整发布；版本号采用 Django 风格（参考 docs.djangoproject.com/en/6.1/internals/release-process/）
+#     vA.B      功能发布 feature release，如 v1.0 / v2.1
+#     vA.B.C    补丁发布 patch release，如 v1.0.1 / v2.1.3
+#     vA.B(a|b|rc)N 预发布 alpha/beta/rc，如 v1.0a1 / v1.0rc2（不占用 latest）
+#   镜像标签：精确 <ver> / sha-<sha> / latest；开启 ENABLE_FLOATING_TAGS 再加 A.B（滚动到该小版本最新补丁）与 A
 # - 手动：默认只构建不发布，必须显式勾选 publish 才会推送镜像
 on:
   push:
@@ -48,6 +52,7 @@ jobs:
       app_tags: ${{ steps.calc.outputs.app_tags }}
       should_push: ${{ steps.calc.outputs.should_push }}
       is_release: ${{ steps.calc.outputs.is_release }}
+      is_prerelease: ${{ steps.calc.outputs.is_prerelease }}
       has_docker_config: ${{ steps.calc.outputs.has_docker_config }}
     steps:
       - name: 计算版本号、镜像标签与是否发布
@@ -66,21 +71,28 @@ jobs:
 
           FULL_SHA="${GITHUB_SHA}"
           SHORT_SHA="${GITHUB_SHA::7}"
-          SEMVER_RE='^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'
+          # Django 风格版本号（参考 https://docs.djangoproject.com/en/6.1/internals/release-process/）：
+          #   vA.B          功能发布 feature release，如 v1.0 / v2.1
+          #   vA.B.C        补丁发布 patch release，如 v1.0.1 / v2.1.3
+          #   vA.B(a|b|rc)N 预发布 alpha/beta/rc，如 v1.0a1 / v1.0rc2
+          #   vA.B.C(a|b|rc)N 补丁的预发布
+          SEMVER_RE='^v[0-9]+\.[0-9]+(\.[0-9]+)?((a|b|rc)[0-9]+)?$'
 
           VERSION=""
           SHOULD_PUSH="false"
           IS_RELEASE="false"
+          IS_PRERELEASE="false"
           FLOATING="false"
 
           if [ "${EVENT_NAME}" = "push" ] && [ "${REF_TYPE}" = "tag" ]; then
             if ! [[ "${REF_NAME}" =~ ${SEMVER_RE} ]]; then
-              echo "::error::Tag ${REF_NAME} 不符合 v<主>.<次>.<修订> 规范，拒绝发布"
+              echo "::error::Tag ${REF_NAME} 不符合规范（应形如 v1.0 功能发布 / v1.0.1 补丁发布；预发布 v1.0a1 / v1.0rc1）"
               exit 1
             fi
             VERSION="${REF_NAME#v}"
             SHOULD_PUSH="true"
             IS_RELEASE="true"
+            [[ "${VERSION}" =~ (a|b|rc)[0-9]+$ ]] && IS_PRERELEASE="true"
             FLOATING="${ENABLE_FLOATING_TAGS:-false}"
           elif [ "${EVENT_NAME}" = "push" ]; then
             if [ "${REF_NAME}" = "main" ]; then
@@ -94,11 +106,12 @@ jobs:
             if [ "${INPUT_PUBLISH}" = "true" ]; then
               if [ "${REF_TYPE}" = "tag" ]; then
                 if ! [[ "${REF_NAME}" =~ ${SEMVER_RE} ]]; then
-                  echo "::error::手动发布只能基于 v<主>.<次>.<修订> Tag，当前为 ${REF_NAME}"
+                  echo "::error::手动发布只能基于规范 Tag（v1.0 / v1.0.1 / v1.0rc1），当前为 ${REF_NAME}"
                   exit 1
                 fi
                 VERSION="${REF_NAME#v}"
                 IS_RELEASE="true"
+                [[ "${VERSION}" =~ (a|b|rc)[0-9]+$ ]] && IS_PRERELEASE="true"
               elif [ "${REF_NAME}" = "main" ]; then
                 VERSION="dev-${SHORT_SHA}"
               else
@@ -126,17 +139,27 @@ jobs:
             HAS_CFG="false"
           fi
 
+          # 从版本号提取主/次版本（功能发布 vA.B 与补丁发布 vA.B.C 通用）
+          MAJOR=$(echo "${VERSION}" | cut -d. -f1)
+          MINOR=$(echo "${VERSION}" | cut -d. -f2)
+
           TAGS=""
           if [ "${HAS_CFG}" = "true" ]; then
+            # 精确版本标签（不可变，每一次发布唯一对应一个 Git Tag）
             TAGS="${IMAGE}:${VERSION}"
             TAGS="${TAGS}"$'\n'"${IMAGE}:sha-${FULL_SHA}"
-            if [ "${IS_RELEASE}" = "true" ]; then
+            # latest 仅给稳定版；预发布（alpha/beta/rc）不占用，避免把未稳定版本当成最新
+            if [ "${IS_RELEASE}" = "true" ] && [ "${IS_PRERELEASE}" != "true" ]; then
               TAGS="${TAGS}"$'\n'"${IMAGE}:latest"
-              if [ "${FLOATING}" = "true" ] && [[ "${VERSION}" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
-                TAGS="${TAGS}"$'\n'"${IMAGE}:${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
-                TAGS="${TAGS}"$'\n'"${IMAGE}:${BASH_REMATCH[1]}"
-              fi
             fi
+            # 浮动标签：A.B 指向该小版本最新补丁（Django 风格，v1.0.1 会滚动更新 v1.0），
+            # A 指向该大版本最新（需显式开启 ENABLE_FLOATING_TAGS；预发布不参与，避免污染滚动标签）
+            if [ "${FLOATING}" = "true" ] && [ "${IS_PRERELEASE}" != "true" ]; then
+              TAGS="${TAGS}"$'\n'"${IMAGE}:${MAJOR}.${MINOR}"
+              TAGS="${TAGS}"$'\n'"${IMAGE}:${MAJOR}"
+            fi
+            # 去重并保持顺序
+            TAGS=$(printf '%s\n' "${TAGS}" | awk 'NF && !seen[$0]++')
           fi
 
           # 测试镜像（API + H5，含 static）：
@@ -155,13 +178,14 @@ jobs:
           if [ "${HAS_CFG}" = "true" ]; then
             APP_TAGS="${APP_IMAGE}:${VERSION}${APP_SUFFIX}"
             APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:sha-${FULL_SHA}${APP_SUFFIX}"
-            if [ "${IS_RELEASE}" = "true" ]; then
+            if [ "${IS_RELEASE}" = "true" ] && [ "${IS_PRERELEASE}" != "true" ]; then
               APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:latest${APP_SUFFIX}"
-              if [ "${FLOATING}" = "true" ] && [[ "${VERSION}" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
-                APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:${BASH_REMATCH[1]}.${BASH_REMATCH[2]}${APP_SUFFIX}"
-                APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:${BASH_REMATCH[1]}${APP_SUFFIX}"
-              fi
             fi
+            if [ "${FLOATING}" = "true" ] && [ "${IS_PRERELEASE}" != "true" ]; then
+              APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:${MAJOR}.${MINOR}${APP_SUFFIX}"
+              APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:${MAJOR}${APP_SUFFIX}"
+            fi
+            APP_TAGS=$(printf '%s\n' "${APP_TAGS}" | awk 'NF && !seen[$0]++')
           fi
 
           {
@@ -171,6 +195,7 @@ jobs:
             echo "app_image=${APP_IMAGE}"
             echo "should_push=${SHOULD_PUSH}"
             echo "is_release=${IS_RELEASE}"
+            echo "is_prerelease=${IS_PRERELEASE}"
             echo "has_docker_config=${HAS_CFG}"
             echo "tags<<TAGS_EOF"
             echo "${TAGS}"
@@ -192,6 +217,16 @@ jobs:
             echo "| 镜像仓库 | \`${IMAGE}\` |"
             echo "| 是否推送 | \`${SHOULD_PUSH}\` |"
             echo "| 正式发布 | \`${IS_RELEASE}\` |"
+            if [ "${IS_RELEASE}" = "true" ]; then
+              if [ "${IS_PRERELEASE}" = "true" ]; then
+                RTYPE="预发布（alpha/beta/rc）"
+              elif [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                RTYPE="补丁发布 patch（A.B.C）"
+              else
+                RTYPE="功能发布 feature（A.B）"
+              fi
+              echo "| 发布类型 | \`${RTYPE}\` |"
+            fi
             echo ""
             echo '```'
             echo "${TAGS:-（不推送）}"
@@ -649,6 +684,7 @@ jobs:
       TAG: ${{ github.ref_name }}
       VERSION: ${{ needs.meta.outputs.version }}
       IMAGE: ${{ needs.meta.outputs.image }}
+      IS_PRERELEASE: ${{ needs.meta.outputs.is_prerelease }}
     steps:
       - name: 检出代码
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -662,13 +698,23 @@ jobs:
             echo "::notice title=Release 已存在::${TAG} 已发布，保持不可变，跳过创建"
             exit 0
           fi
+          NOTES="镜像：\`${IMAGE}:${VERSION}\`
+
+          本版本由 GitHub Actions 自动构建，镜像标签与 Git Tag 一一对应。
+          部署时建议使用 Digest 固定版本。"
+          PRERELEASE_FLAG=""
+          if [ "${IS_PRERELEASE}" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+            NOTES="${NOTES}
+
+          > 注意：这是预发布版本（alpha/beta/rc），仅供测试，请勿用于生产环境。"
+          fi
+          # shellcheck disable=SC2086
           gh release create "${TAG}" \
             --title "${TAG}" \
             --generate-notes \
-            --notes "镜像：\`${IMAGE}:${VERSION}\`
-
-          本版本由 GitHub Actions 自动构建，镜像标签与 Git Tag 一一对应。
-          部署时建议使用 Digest 固定版本。" \
+            ${PRERELEASE_FLAG} \
+            --notes "${NOTES}" \
             --verify-tag
 
   # ------------------------------------------------------------------
