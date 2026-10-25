@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from datetime import datetime
 from typing import Any
 
@@ -19,7 +21,7 @@ class CheckinSetting(TimestampMixin, SQLModel, table=True):
     __table_args__ = (UniqueConstraint("account_id", name="uq_setting_account"),)
 
     id: int | None = Field(default=None, primary_key=True)
-    account_id: int = Field(foreign_key="account.id", index=True, nullable=False)
+    account_id: uuid.UUID = Field(foreign_key="account.id", index=True, nullable=False)
     period_days: int = Field(default=1, ge=1, le=30, nullable=False)
     # 本地确认时间点，HH:MM
     checkin_time_local: str = Field(default="08:00", max_length=5, nullable=False)
@@ -51,7 +53,7 @@ class CheckinRecord(TimestampMixin, SQLModel, table=True):
     )
 
     id: int | None = Field(default=None, primary_key=True)
-    account_id: int = Field(foreign_key="account.id", index=True, nullable=False)
+    account_id: uuid.UUID = Field(foreign_key="account.id", index=True, nullable=False)
     # 服务端确认时间（UTC），一切判断以此为准
     checked_in_at: datetime = Field(sa_type=UTCDateTime, nullable=False, index=True)
     # 客户端上报时间，仅作展示参考，不参与业务判定

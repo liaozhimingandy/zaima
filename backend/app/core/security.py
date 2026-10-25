@@ -1,7 +1,7 @@
 """匿名账户凭证的生成与校验。
 
-凭证格式：``zm_<public_id>.<secret>``
-- public_id：服务端生成的高熵随机串（用于定位账户）
+凭证格式：``zm_<9位数字 public_id>.<secret>``
+- public_id：9 位纯数字，方便用户口述/报障，唯一性由数据库唯一索引保证
 - secret：服务端生成的高熵随机串（仅哈希入库，明文只返回一次）
 
 日志中一律不打印完整凭证。
@@ -14,19 +14,19 @@ import hmac
 import re
 import secrets
 
+from app.core.ids import PUBLIC_ID_LENGTH, new_public_id  # noqa: F401  对外复用
+
 TOKEN_PREFIX = "zm_"
-_PUBLIC_ID_BYTES = 12  # 96 bit
 _SECRET_BYTES = 32  # 256 bit
 
-_TOKEN_RE = re.compile(r"^zm_([A-Za-z0-9_-]{8,64})\.([A-Za-z0-9_-]{16,128})$")
+# public_id 固定 9 位数字；secret 为 urlsafe base64
+_TOKEN_RE = re.compile(
+    rf"^zm_(\d{{{PUBLIC_ID_LENGTH}}})\.([A-Za-z0-9_-]{{16,128}})$"
+)
 
 
 def hash_secret(secret: str) -> str:
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()
-
-
-def new_public_id() -> str:
-    return secrets.token_urlsafe(_PUBLIC_ID_BYTES).replace("-", "").replace("_", "")[:16]
 
 
 def new_secret() -> str:

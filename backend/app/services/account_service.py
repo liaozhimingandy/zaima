@@ -24,6 +24,23 @@ from app.services.setting_service import ensure_setting
 logger = get_logger(__name__)
 
 
+_PUBLIC_ID_RETRIES = 8
+
+
+def _allocate_public_id(session: Session) -> str:
+    """分配一个未被占用的 9 位数字编号。
+
+    先查一遍降低碰撞概率；真正的唯一性由 ``ix_account_public_id`` 唯一索引保证，
+    极端并发下由调用方捕获 IntegrityError 重试。
+    """
+    for _ in range(_PUBLIC_ID_RETRIES):
+        candidate = new_public_id()
+        exists = session.exec(select(Account.id).where(Account.public_id == candidate)).first()
+        if exists is None:
+            return candidate
+    raise RuntimeError("无法分配唯一的 9 位账户编号，请稍后重试")
+
+
 def create_account(
     session: Session,
     *,
@@ -44,26 +61,41 @@ def create_account(
             code=ErrorCode.ACCOUNT_EXISTS,
         )
 
-    public_id = new_public_id()
-    secret = new_secret()
-    account = Account(
-        public_id=public_id,
-        secret_hash=hash_secret(secret),
-        init_key=init_key,
-        platform=platform or "unknown",
-        app_version=app_version,
-        status=AccountStatus.ACTIVE.value,
-    )
-    session.add(account)
-    try:
-        session.commit()
-    except IntegrityError as exc:
-        session.rollback()
-        logger.warning("并发初始化冲突，已回滚：%s", type(exc).__name__)
-        raise ConflictError(
-            "该初始化请求已创建过账户，请使用本地保存的凭证",
-            code=ErrorCode.ACCOUNT_EXISTS,
-        ) from exc
+    account: Account | None = None
+    public_id = ""
+    secret = ""
+
+    for attempt in range(_PUBLIC_ID_RETRIES):
+        public_id = _allocate_public_id(session)
+        secret = new_secret()
+        account = Account(
+            public_id=public_id,
+            secret_hash=hash_secret(secret),
+            init_key=init_key,
+            platform=platform or "unknown",
+            app_version=app_version,
+            status=AccountStatus.ACTIVE.value,
+        )
+        session.add(account)
+        try:
+            session.commit()
+            break
+        except IntegrityError as exc:
+            session.rollback()
+            detail = str(getattr(exc, "orig", exc)).lower()
+            # 9 位编号撞上了：换一个重试；其它冲突（init_key）走 409
+            if "public_id" in detail and attempt < _PUBLIC_ID_RETRIES - 1:
+                logger.warning("账户编号碰撞，重试第 %s 次", attempt + 1)
+                account = None
+                continue
+            logger.warning("并发初始化冲突，已回滚：%s", type(exc).__name__)
+            raise ConflictError(
+                "该初始化请求已创建过账户，请使用本地保存的凭证",
+                code=ErrorCode.ACCOUNT_EXISTS,
+            ) from exc
+
+    if account is None:
+        raise ConflictError("账户创建失败，请稍后重试")
 
     session.refresh(account)
     ensure_setting(session, account, timezone=timezone)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from datetime import datetime
 
 from sqlalchemy import Column, ForeignKey, Index, Integer, UniqueConstraint
@@ -30,7 +32,7 @@ class SafetyAlert(TimestampMixin, SQLModel, table=True):
     )
 
     id: int | None = Field(default=None, primary_key=True)
-    account_id: int = Field(foreign_key="account.id", index=True, nullable=False)
+    account_id: uuid.UUID = Field(foreign_key="account.id", index=True, nullable=False)
     # 触发该事件的应确认时间
     due_at: datetime = Field(sa_type=UTCDateTime, nullable=False)
     triggered_at: datetime = Field(default_factory=utcnow, sa_type=UTCDateTime, nullable=False)
@@ -58,7 +60,7 @@ class NotificationRecord(TimestampMixin, SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     alert_id: int = Field(foreign_key="safety_alert.id", index=True, nullable=False)
-    account_id: int = Field(foreign_key="account.id", index=True, nullable=False)
+    account_id: uuid.UUID = Field(foreign_key="account.id", index=True, nullable=False)
     guardian_id: int | None = Field(
         default=None,
         sa_column=Column(

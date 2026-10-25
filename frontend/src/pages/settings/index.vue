@@ -192,7 +192,8 @@ const periodOptions = [
 
 const accountIdText = computed(() => {
   const id = accountStore.account?.accountId
-  return id ? `ID ${id.slice(0, 8)}` : 'ID —'
+  // 9 位数字编号，完整展示，方便用户口述（客服/报障时用）
+  return id ? `ID ${id}` : 'ID —'
 })
 
 const createdText = computed(() => {

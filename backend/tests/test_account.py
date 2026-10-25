@@ -22,10 +22,11 @@ def test_init_creates_account_with_token(client: TestClient) -> None:
     assert data["platform"] == "h5"
     token = data["accessToken"]
     assert token.startswith("zm_")
-    # 凭证由 publicId.secret 构成，secret 具备足够长度
+    # 凭证由「9 位数字 publicId」+「高熵 secret」构成
     public_id, secret = token[3:].split(".", 1)
-    assert len(public_id) >= 10
+    assert len(public_id) == 9 and public_id.isdigit() and public_id[0] != "0"
     assert len(secret) >= 40
+    assert data["accountId"] == public_id
 
 
 def test_duplicate_init_conflicts(client: TestClient) -> None:

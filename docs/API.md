@@ -66,10 +66,13 @@
 除 `POST /api/account/init` 与 `GET /api/health` 外，所有接口都需要：
 
 ```
-Authorization: Bearer zm_<publicId>.<secret>
+Authorization: Bearer zm_<9位数字publicId>.<secret>
 ```
 
 凭证由服务端生成，**明文只返回一次**，服务端仅保存 `secret` 的 SHA-256。凭证无效统一返回 401，不区分具体原因。
+
+格式：`zm_<9 位数字账户编号>.<secret>`，例如 `zm_481920735.xxxx`。
+账户编号是 9 位纯数字（100000000–999999999），方便用户口述；它**不是**自增的，也不能用来推算其他账户。
 
 ---
 
@@ -104,8 +107,8 @@ Authorization: Bearer zm_<publicId>.<secret>
   "code": "OK",
   "message": "账户已创建",
   "data": {
-    "accessToken": "zm_gFkRAW8Bv9Pykmg.zO_YgahkLcDLS0Zhgp5riaSfN5pZJp90EhQ9yT3wH2o",
-    "accountId": "gFkRAW8Bv9Pykmg",
+    "accessToken": "zm_481920735.zO_YgahkLcDLS0Zhgp5riaSfN5pZJp90EhQ9yT3wH2o",
+    "accountId": "481920735",
     "createdAt": "2026-10-22T22:20:42.997450Z",
     "platform": "h5",
     "isNew": true
@@ -123,7 +126,7 @@ Authorization: Bearer zm_<publicId>.<secret>
   "code": "OK",
   "message": "success",
   "data": {
-    "account": { "accountId": "gFkRAW8Bv9Pykmg", "createdAt": "...", "platform": "h5", "appVersion": "1.0.0", "timezone": "Asia/Shanghai" },
+    "account": { "accountId": "481920735", "createdAt": "...", "platform": "h5", "appVersion": "1.0.0", "timezone": "Asia/Shanghai" },
     "setting": { "...": "同 GET /api/checkin/settings 的 data" }
   },
   "requestId": "..."

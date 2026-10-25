@@ -20,9 +20,9 @@ services:
 
   # 生产形态：纯 API，不含任何前端文件（对应 backend/Dockerfile）
   api:
-    build:
-      context: ./backend
-    image: zaima-api:local
+    # build:
+    #   context: ./backend
+    image: liaozhiming/zaima-api:dev-fb462ea
     container_name: dev-zaima-api-01
     restart: unless-stopped
     # depends_on:
@@ -61,10 +61,10 @@ services:
   # 端口只绑定回环地址，避免同一局域网/公网的其他机器直接打开页面
   app:
     # 调试镜像从源码构建：改了 Dockerfile.app / 前端后需要 --build 才会生效
-    build:
-      context: .
-      dockerfile: Dockerfile.app
-    image: zaima-app:local
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.app
+    image: liaozhiming/zaima-api:dev-fb462ea-app
     container_name: dev-zaima-app-01
     restart: unless-stopped
     environment:

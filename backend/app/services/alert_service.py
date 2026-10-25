@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -43,7 +44,7 @@ class ScanStats:
 
 def resolve_open_alerts(
     session: Session,
-    account_id: int,
+    account_id: uuid.UUID,
     *,
     resolved_at: datetime | None = None,
     resolved_by: str = "checkin",
@@ -125,9 +126,12 @@ def scan_once(
         .order_by(Account.id)
     )
 
-    cursor = 0
+    # account.id 为 UUIDv7（时间有序），键集分页用「上一批最后一个 id」，
+    # 首批不加条件（不能用 0 这类整数哨兵，UUID 与整数无法比较）
+    cursor: uuid.UUID | None = None
     while True:
-        rows = session.execute(base_stmt.where(Account.id > cursor).limit(batch)).all()
+        stmt = base_stmt if cursor is None else base_stmt.where(Account.id > cursor)
+        rows = session.execute(stmt.limit(batch)).all()
         if not rows:
             break
         for account, setting, last_at in rows:

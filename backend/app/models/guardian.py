@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, SQLModel
 
@@ -17,7 +19,7 @@ class Guardian(TimestampMixin, SQLModel, table=True):
     )
 
     id: int | None = Field(default=None, primary_key=True)
-    account_id: int = Field(foreign_key="account.id", index=True, nullable=False)
+    account_id: uuid.UUID = Field(foreign_key="account.id", index=True, nullable=False)
     name: str = Field(max_length=32, nullable=False)
     email: str = Field(max_length=254, nullable=False, index=True)
     relation: str | None = Field(default=None, max_length=16)

@@ -202,6 +202,14 @@ MSYS_NO_PATHCONV=1 docker exec dev-zaima-app-01 python -c "import sqlite3;print(
 
 ## 核心业务规则
 
+### 标识设计
+
+- 账户主键 `account.id` 为 **UUIDv7**（时间有序、不可枚举），不对外暴露
+- 对外只用 **9 位数字编号**（`public_id`，100000000–999999999，唯一索引 + 碰撞重试），凭证形如 `zm_481920735.<secret>`
+- 其余表（确认记录、守护人、事件、通知）主键仍为自增，属账户内部数据
+
+详见 [docs/DATA-MODEL.md](docs/DATA-MODEL.md)。
+
 ### 时间语义
 
 - 服务端全程使用 **UTC** 存储与比较；只在计算「本地确认时刻」时转换到用户时区（IANA，如 `Asia/Shanghai`）。
@@ -307,6 +315,7 @@ TEST_DATABASE_URL="postgresql+psycopg://zaima:zaima@127.0.0.1:55432/zaima_test" 
 ## 文档索引
 
 - [docs/API.md](docs/API.md) — 接口文档
+- [docs/DATA-MODEL.md](docs/DATA-MODEL.md) — 数据模型（主键策略、9 位编号、索引、迁移）
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — 生产部署（Docker、SMTP、HTTPS、迁移、备份）
 - [docs/CI-CD.md](docs/CI-CD.md) — GitHub Actions 与 Docker Hub 发布流程、凭据配置、验证记录
 - [docs/TEST-REPORT.md](docs/TEST-REPORT.md) — 测试报告与验收结论

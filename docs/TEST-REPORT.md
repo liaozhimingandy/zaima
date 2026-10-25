@@ -37,8 +37,8 @@ TEST_DATABASE_URL="postgresql+psycopg://zaima:zaima@127.0.0.1:55432/zaima_test" 
 
 | 数据库 | 结果 |
 | --- | --- |
-| SQLite | **71 passed in 5.89s** |
-| PostgreSQL 16 | **71 passed in 10.21s** |
+| SQLite | **77 passed in 6.04s** |
+| PostgreSQL 16 | **77 passed in 9.92s** |
 
 > 早期版本曾出现 `starlette.testclient` 的 `anyio` 弃用告警，已在 `pyproject.toml` 中过滤；当前运行无告警输出。
 
@@ -52,8 +52,9 @@ TEST_DATABASE_URL="postgresql+psycopg://zaima:zaima@127.0.0.1:55432/zaima_test" 
 | `tests/test_guardians.py` | 8 | 空列表、增删改查、邮箱小写归一、3 位上限、重复邮箱（含大小写）、编辑成重复邮箱、非法邮箱、空姓名、删除不存在 |
 | `tests/test_alert_flow.py` | 10 | 阈值前不建事件、提醒阶段不发邮件、事件创建+模拟邮件发送、Scheduler 三次重复执行幂等、确认后恢复、确认取消待发邮件、3 名守护人全部通知、无守护人不通知、账户隔离、账户数超单批上限时全量扫描（键集分页） |
 | `tests/test_email.py` | 7 | Mock 适配器落盘 `.eml`、SMTP 未配置立即永久失败、失败两次后成功（退避重试）、超上限失败且不再重试、`sending` 中断恢复、dedupe 去重、生产环境禁止 mock 适配器 |
-| `tests/test_contract.py` | 14 | 成功/失败响应信封、`X-Request-ID` 回显、未知路由 404 信封、OpenAPI 可用、确认幂等唯一约束、事件唯一约束、守护人上限配置、非法 `X-Debug-Now` |
-| **合计** | **71** | |
+| `tests/test_contract.py` | 14 | 成功/失败响应信封、`X-Request-ID` 回显、未知路由 404 信封、OpenAPI 可用、确认幂等唯一约束、事件唯一约束、守护人上限配置、非法 `X-Debug-Now`、前端托管范围（仅 dev、仅 `/` 与 `/assets/*`、访问口令） |
+| `tests/test_ids.py` | 6 | UUIDv7 的版本/变体/时间有序/时间戳、9 位编号范围与格式、编号空间碰撞率 |
+| **合计** | **77** | |
 
 ### 2.4 数据库迁移
 
@@ -61,8 +62,22 @@ TEST_DATABASE_URL="postgresql+psycopg://zaima:zaima@127.0.0.1:55432/zaima_test" 
 alembic upgrade head      # OK
 alembic downgrade base    # OK
 alembic upgrade head      # OK
-alembic current           # 76baff02eb9e (head)
+alembic current           # 3d9c1a7f5b20 (head)
 ```
+
+**主键类型迁移（`76baff02eb9e` → `3d9c1a7f5b20`）实测**：先用旧结构建库并造数据
+（2 账户 / 3 守护人 / 3 确认 / 1 事件 / 2 通知），再执行迁移：
+
+| 校验项 | 结果 |
+| --- | --- |
+| 行数 | 迁移前后完全一致 |
+| `account.id` | `01a17366-d2ff-7000-…`，类型 UUID、version = 7 |
+| `account.public_id` | 9 位数字（`189844741` / `913029573`） |
+| 外键完整性 | 孤儿记录 0 |
+| 约束名 | 恢复为 `account_pkey`、`checkin_record_account_id_fkey`、`uq_*` |
+| 自增序列 | 插入新记录得到 `max(id)+1`，无冲突 |
+| 降级 → 再升级 | 通过（id 回到 integer，编号变 16 位随机串） |
+| SQLite | 同样升级成功 |
 
 迁移生成的 6 张表：`account`、`checkin_setting`、`checkin_record`、`guardian`、`safety_alert`、`notification_record`，
 包含唯一约束（`account.init_key`、`(account_id, idempotency_key)`、`(account_id, email)`、`(account_id, due_at)`、`dedupe_key`）与复合索引。
