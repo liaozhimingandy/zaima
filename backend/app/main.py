@@ -205,6 +205,17 @@ def _mount_static() -> bool:
             raise HTTPException(status_code=404, detail="Not Found")
         return FileResponse(target)
 
+    # 公开的静态资源（logo 等）：与 /assets/* 类似，但面向公开访问，不校验口令。
+    # 仅 dev 提供；做路径穿越防护，只允许读取 STATIC_DIR/static 下的真实文件。
+    static_root = (root / "static").resolve()
+
+    @app.get("/static/{path:path}", include_in_schema=False)
+    def spa_static(path: str, request: Request):  # noqa: ANN202
+        target = (static_root / path).resolve()
+        if not target.is_relative_to(static_root) or not target.is_file():
+            raise HTTPException(status_code=404, detail="Not Found")
+        return FileResponse(target)
+
     logger.info(
         "已在 dev 环境托管前端页面：%s（仅 / 与 /assets/* 可访问%s）",
         root,
@@ -224,5 +235,6 @@ if not _has_static:
             "version": __version__,
             "docs": "/docs" if settings.DOCS_ENABLED else None,
             "slogan": "每天点一下，让有人知道你还在。",
+            "logo": settings.LOGO_URL,
             "hint": "当前未托管前端页面：前端仅在 APP_ENV=dev 且设置 STATIC_DIR 时可用",
         }

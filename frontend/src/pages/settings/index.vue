@@ -149,6 +149,7 @@
     </view>
 
     <view class="footer">
+      <ZmLogo class="footer__logo" :size="96" />
       <text class="footer__slogan">每天点一下，让有人知道你还在。</text>
       <text class="footer__version">在吗 v{{ version }}</text>
     </view>
@@ -162,6 +163,7 @@ import { computed, onMounted, ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import AppTabBar from '@/components/AppTabBar.vue'
 import NavBar from '@/components/NavBar.vue'
+import ZmLogo from '@/components/ZmLogo.vue'
 import { updateSettings, fetchSettings } from '@/api/checkin'
 import { humanizeError } from '@/api/http'
 import type { CheckinSetting } from '@/api/types'
@@ -515,6 +517,10 @@ onShow(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
+
+  &__logo {
+    margin-bottom: $zm-space-md;
+  }
 
   &__slogan {
     font-size: $zm-font-xs;

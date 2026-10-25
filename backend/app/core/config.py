@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # 可选访问口令：留空表示不校验（默认）。设置后访问页面必须带 ?k=<口令>，
     # 校验通过会写入 Cookie。仅用于 dev 环境，属于「防随手打开」的挡板，不是安全边界。
     STATIC_ACCESS_KEY: str = ""
+    # 品牌 Logo 链接（前端 favicon / 对外品牌展示使用）。
+    # dev 一体化镜像会由后端在 /static/logo.svg 提供该文件；
+    # 生产/独立 API 环境请改为可公开访问的绝对地址（如 CDN）。
+    LOGO_URL: str = "/static/logo.svg"
 
     # ---------- 日志 ----------
     LOG_LEVEL: str = "INFO"

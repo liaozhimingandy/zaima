@@ -1,0 +1,8 @@
+<svg width="200" height="200" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- 支付风格圆角方形底板，填充在吗主题色 #12b886 -->
+  <rect x="0" y="0" width="1024" height="1024" rx="230" ry="230" fill="#12b886"/>
+  <!-- 白色圆圈（圆环） -->
+  <circle cx="512" cy="512" r="300" fill="none" stroke="#ffffff" stroke-width="52"/>
+  <!-- 白色对勾 -->
+  <path d="M314 520 L454 662 L710 366" fill="none" stroke="#ffffff" stroke-width="74" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

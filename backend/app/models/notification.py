@@ -9,7 +9,7 @@ from datetime import datetime
 from sqlalchemy import Column, ForeignKey, Index, Integer, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
-from app.models.base import TimestampMixin, UTCDateTime, utcnow
+from app.models.base import UTCDateTime, created_at_column, updated_at_column, utcnow
 from app.models.enums import (
     NotificationChannel,
     NotificationKind,
@@ -18,7 +18,7 @@ from app.models.enums import (
 )
 
 
-class SafetyAlert(TimestampMixin, SQLModel, table=True):
+class SafetyAlert(SQLModel, table=True):
     """长时间未确认事件。
 
     注意：该事件仅代表「长时间未确认」，不代表发生事故或死亡。
@@ -45,8 +45,12 @@ class SafetyAlert(TimestampMixin, SQLModel, table=True):
     guardian_count: int = Field(default=0, nullable=False)
     notified_guardian_count: int = Field(default=0, nullable=False)
 
+    # 时间字段置于表末
+    created_at: datetime = created_at_column()
+    updated_at: datetime = updated_at_column()
 
-class NotificationRecord(TimestampMixin, SQLModel, table=True):
+
+class NotificationRecord(SQLModel, table=True):
     """一次通知任务（当前仅邮件）。
 
     ``dedupe_key`` 唯一约束保证同一事件、同一守护人、同一类型只生成一条任务。
@@ -87,3 +91,7 @@ class NotificationRecord(TimestampMixin, SQLModel, table=True):
     last_error: str | None = Field(default=None, max_length=500)
     # 是否为模拟发送（开发环境），便于区分真实结果
     simulated: bool = Field(default=False, nullable=False)
+
+    # 时间字段置于表末
+    created_at: datetime = created_at_column()
+    updated_at: datetime = updated_at_column()

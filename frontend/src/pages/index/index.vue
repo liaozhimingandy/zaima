@@ -3,8 +3,11 @@
     <NavBar title="在吗" />
 
     <view class="hero">
-      <text class="hero__brand">在吗</text>
-      <text class="hero__slogan">每天点一下，让有人知道你还在。</text>
+      <ZmLogo class="hero__logo" :size="96" />
+      <view class="hero__text">
+        <text class="hero__brand">在吗</text>
+        <text class="hero__slogan">每天点一下，让有人知道你还在。</text>
+      </view>
     </view>
 
     <StateView
@@ -78,6 +81,7 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import NavBar from '@/components/NavBar.vue'
 import StateView from '@/components/StateView.vue'
 import StatusCard from '@/components/StatusCard.vue'
+import ZmLogo from '@/components/ZmLogo.vue'
 import { humanizeError } from '@/api/http'
 import { useAccountStore } from '@/stores/account'
 import { useCheckinStore } from '@/stores/checkin'
@@ -226,7 +230,17 @@ onUnmounted(() => {
 .hero {
   padding: $zm-space-md 4rpx $zm-space-lg;
   display: flex;
-  flex-direction: column;
+  align-items: center;
+
+  &__logo {
+    margin-right: $zm-space-md;
+    flex-shrink: 0;
+  }
+
+  &__text {
+    display: flex;
+    flex-direction: column;
+  }
 
   &__brand {
     font-size: 52rpx;

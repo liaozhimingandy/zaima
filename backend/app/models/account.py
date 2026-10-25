@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy import Column, Uuid
 from sqlmodel import Field, SQLModel
 
 from app.core.ids import PUBLIC_ID_LENGTH, uuid7
-from app.models.base import TimestampMixin
+from app.models.base import created_at_column, updated_at_column
 from app.models.enums import AccountStatus
 
 
-class Account(TimestampMixin, SQLModel, table=True):
+class Account(SQLModel, table=True):
     """匿名账户。
 
     - 主键 ``id`` 为 UUIDv7（时间有序），不对外暴露，也不可被枚举
@@ -35,3 +36,7 @@ class Account(TimestampMixin, SQLModel, table=True):
     platform: str = Field(default="unknown", max_length=32)
     app_version: str | None = Field(default=None, max_length=32)
     status: str = Field(default=AccountStatus.ACTIVE.value, max_length=16)
+
+    # 时间字段统一置于表末：创建时间、更新时间
+    created_at: datetime = created_at_column()
+    updated_at: datetime = updated_at_column()

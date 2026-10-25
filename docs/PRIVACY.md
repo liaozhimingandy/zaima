@@ -102,9 +102,7 @@
 ## 十、变更与联系
 
 - 政策重大变更会在应用内提示
-- 隐私相关咨询：support@zaima.app
-
----
+- 隐私相关咨询：support@zaima.alsoapp.com
 
 ## 附：用户须知（应用内展示摘要）
 

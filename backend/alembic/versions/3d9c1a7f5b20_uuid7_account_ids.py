@@ -53,8 +53,6 @@ def _spec(id_type: sa.types.TypeEngine, public_id_len: int) -> dict[str, list[tu
     """
     return {
         "account": [
-            ("created_at", TS, False),
-            ("updated_at", TS, False),
             ("id", id_type, False),
             ("public_id", sa.String(public_id_len), False),
             ("secret_hash", sa.String(64), False),
@@ -62,10 +60,10 @@ def _spec(id_type: sa.types.TypeEngine, public_id_len: int) -> dict[str, list[tu
             ("platform", sa.String(32), False),
             ("app_version", sa.String(32), True),
             ("status", sa.String(16), False),
-        ],
-        "checkin_setting": [
             ("created_at", TS, False),
             ("updated_at", TS, False),
+        ],
+        "checkin_setting": [
             ("id", sa.Integer(), False),
             ("account_id", id_type, False),
             ("period_days", sa.Integer(), False),
@@ -74,10 +72,10 @@ def _spec(id_type: sa.types.TypeEngine, public_id_len: int) -> dict[str, list[tu
             ("reminder_offsets", sa.JSON(), False),
             ("alert_offset_minutes", sa.Integer(), False),
             ("reminders_enabled", sa.Boolean(), False),
-        ],
-        "checkin_record": [
             ("created_at", TS, False),
             ("updated_at", TS, False),
+        ],
+        "checkin_record": [
             ("id", sa.Integer(), False),
             ("account_id", id_type, False),
             ("checked_in_at", TS, False),
@@ -86,20 +84,20 @@ def _spec(id_type: sa.types.TypeEngine, public_id_len: int) -> dict[str, list[tu
             ("idempotency_key", sa.String(64), False),
             ("source", sa.String(16), False),
             ("note", sa.String(200), True),
-        ],
-        "guardian": [
             ("created_at", TS, False),
             ("updated_at", TS, False),
+        ],
+        "guardian": [
             ("id", sa.Integer(), False),
             ("account_id", id_type, False),
             ("name", sa.String(32), False),
             ("email", sa.String(254), False),
             ("relation", sa.String(16), True),
             ("sort_order", sa.Integer(), False),
-        ],
-        "safety_alert": [
             ("created_at", TS, False),
             ("updated_at", TS, False),
+        ],
+        "safety_alert": [
             ("id", sa.Integer(), False),
             ("account_id", id_type, False),
             ("due_at", TS, False),
@@ -110,10 +108,10 @@ def _spec(id_type: sa.types.TypeEngine, public_id_len: int) -> dict[str, list[tu
             ("overdue_minutes", sa.Integer(), False),
             ("guardian_count", sa.Integer(), False),
             ("notified_guardian_count", sa.Integer(), False),
-        ],
-        "notification_record": [
             ("created_at", TS, False),
             ("updated_at", TS, False),
+        ],
+        "notification_record": [
             ("id", sa.Integer(), False),
             ("alert_id", sa.Integer(), False),
             ("account_id", id_type, False),
@@ -132,6 +130,8 @@ def _spec(id_type: sa.types.TypeEngine, public_id_len: int) -> dict[str, list[tu
             ("sent_at", TS, True),
             ("last_error", sa.String(500), True),
             ("simulated", sa.Boolean(), False),
+            ("created_at", TS, False),
+            ("updated_at", TS, False),
         ],
     }
 
