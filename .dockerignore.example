@@ -1,0 +1,21 @@
+# 来自 rhapsody（保留项目既有忽略）
+docker/licenses/*.ohl
+
+# 公共补充（通用，按需裁剪）
+.git
+.github
+**/.venv
+**/venv
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/*.log
+docs
+*.md
+.env
+.env.*
+output
+logs
+data
+build
+dist

@@ -1,0 +1,41 @@
+# =============================================================================
+# project.config.yaml -- 项目专属配置（单一来源，公共模板不触碰此文件）
+# 仅填写与默认值不同的项；其余交给公共模板。
+# 注意：本文件是人类可读的「配置清单」；实际 CI 取值来自 GitHub Variables（同名键）。
+# =============================================================================
+project:
+  name: zaima                 # 项目名（仓库名）
+  version: 1.0.1                # 语义化版本（CI/镜像 tag 来源）
+  license: MIT
+  type: auto                     # auto | backend | frontend | fullstack（auto=按文件探测）
+
+# ---- 开关：控制各构建阶段是否启用（auto=按项目文件自动探测） ----
+enable:
+  docker_app: auto               # 应用镜像：auto(有 Dockerfile 即启用) | true | false
+  docker_assets: auto            # 静态资源独立镜像：auto(前端即启用) | true | false
+  static_cloudflare: false      # Cloudflare Pages 部署：需显式 true 并配 Secret
+
+docker:
+  registry: ""   # 默认阿里云 ACR；Docker Hub 留空 ""
+  image: liaozhiming/zaima     # <namespace>/<project>
+  dockerfile: Dockerfile          # 多服务时另起 Dockerfile-<svc>
+  platforms: linux/amd64,linux/arm64
+
+static:
+  build_command: npm run build
+  output_dir: dist
+  assets_image:                  # 静态资源独立镜像（scratch，可独立分发）
+    dockerfile: docker-assets/Dockerfile.assets
+    # 构建产物镜像标签: <image>:<version>-assets / :latest-assets / :sha-xxxx-assets
+
+cloudflare:
+  project: "zaima"                    # Cloudflare Pages 项目名（enable.static_cloudflare=true 时必填）
+
+
+# ---- 可选：自定义步骤钩子（在仓库 hooks/ 下放同名脚本即生效，详见 hooks/README.md） ----
+# hooks:
+#   ci: hooks/ci.sh
+#   pre_build: hooks/pre-build.sh
+#   post_build: hooks/post-build.sh
+#   pre_deploy: hooks/pre-deploy.sh
+#   post_deploy: hooks/post-deploy.sh

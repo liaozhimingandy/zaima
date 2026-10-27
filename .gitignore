@@ -39,3 +39,6 @@ release-manifest/
 
 # ---------- 本地 Agent 记忆/会话数据（不入库）----------
 .workbuddy/
+
+# ---------- 原生打包（CI 运行时从 DCloud 离线 SDK 下载生成，不入库）----------
+native/

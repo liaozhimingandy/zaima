@@ -1,0 +1,82 @@
+# =============================================================================
+# static.yml  -- 公共静态资源部署模板（Cloudflare Pages，基于 vue 真实模式）
+# 仅前端/静态站点项目启用；无静态资源项目请勿启用本文件。
+# 触发: 推送 v* tag / main
+# 真实参考: vue_tuiwen/.github/workflows/build.yml（cloudflare/wrangler-action@v4）
+#
+# 项目专属变量(Variables):
+#   STATIC_BUILD_CMD  如 npm run build
+#   STATIC_DIST_DIR   如 dist
+#   CLOUDFLARE_PROJECT  Pages 项目名（vue 真实为 tuiwen）
+# Secrets:
+#   CLOUDFLARE_API_TOKEN  (需 Account > Cloudflare Pages > Edit)
+#   CLOUDFLARE_ACCOUNT_ID
+# 用户自定义步骤: 在仓库 hooks/ 下放 pre-deploy.sh / post-deploy.sh 即被调用（详见 hooks/README.md）。
+# =============================================================================
+name: Deploy Static (Cloudflare Pages)
+
+on:
+  push:
+    tags: ['v*']
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - '!.github/**'
+      - '!**/*.md'
+
+permissions:
+  contents: read
+
+env:
+  BUILD_CMD: ${{ vars.STATIC_BUILD_CMD || 'npm run build' }}
+  DIST_DIR: ${{ vars.STATIC_DIST_DIR || 'dist' }}
+  PROJECT: ${{ vars.CLOUDFLARE_PROJECT }}
+
+jobs:
+  deploy:
+    # 仅当显式开启 Cloudflare 部署时执行
+    if: ${{ vars.ENABLE_STATIC_CLOUDFLARE == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Custom pre-deploy hook (hooks/pre-deploy.sh)
+        if: ${{ hashFiles('hooks/pre-deploy.sh') != '' }}
+        run: bash hooks/pre-deploy.sh
+        env:
+          CLOUDFLARE_PROJECT: ${{ env.PROJECT }}
+          STATIC_DIST_DIR: ${{ env.DIST_DIR }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (compile to HTML)
+        run: |
+          ${{ env.BUILD_CMD }}
+          # SPA 回退：保证前端路由 404 兜底（vue 真实做法）
+          cp "${{ env.DIST_DIR }}/index.html" "${{ env.DIST_DIR }}/404.html" 2>/dev/null || true
+
+      - name: Deploy to Cloudflare Pages
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy ${{ env.DIST_DIR }} --project-name=${{ env.PROJECT }} --branch main
+
+      - name: Custom post-deploy hook (hooks/post-deploy.sh)
+        if: ${{ hashFiles('hooks/post-deploy.sh') != '' }}
+        run: bash hooks/post-deploy.sh
+        env:
+          CLOUDFLARE_PROJECT: ${{ env.PROJECT }}
+          DEPLOY_URL: ${{ steps.deploy.outputs.deployment-url }}

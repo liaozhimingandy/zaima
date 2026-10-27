@@ -1,40 +1,21 @@
-# 根目录构建上下文（Dockerfile.app 使用）：
-# 需要 frontend/ 与 backend/ 两个子目录，但不需要任何本地产物与密钥。
+# 来自 rhapsody（保留项目既有忽略）
+docker/licenses/*.ohl
 
-# 依赖与构建产物
-**/node_modules
-**/dist
-**/.venv
-**/venv
-**/__pycache__
-**/*.py[cod]
-**/.pytest_cache
-**/.mypy_cache
-**/.ruff_cache
-**/unpackage
-
-# 环境与密钥
-**/.env
-**/.env.*
-.env
-.env.*
-**/*.pem
-**/*.key
-
-# 运行产物
-**/.mailbox
-**/logs
-**/*.log
-**/pytest-*.xml
-**/release-manifest
-
-# 版本控制与 CI
+# 公共补充（通用，按需裁剪）
 .git
 .github
-.idea
-.vscode
-
-# 文档（镜像内不需要）
+**/.venv
+**/venv
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/*.log
 docs
 *.md
-LICENSE
+.env
+.env.*
+output
+logs
+data
+build
+dist

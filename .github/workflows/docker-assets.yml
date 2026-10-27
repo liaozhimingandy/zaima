@@ -1,0 +1,143 @@
+# =============================================================================
+# docker-assets.yml  -- 静态资源独立镜像构建/推送模板（公共约定）
+#
+# 触发: 推送 v* tag / push main / 手动
+# 作用: 构建前端 -> 把 dist/ 打成一个 scratch 基础「静态资源镜像」并推送
+#       标签: <repo>:<ver>-assets  /  :latest-assets  /  :sha-xxxx-assets
+# 目的: 静态文件与运行时不耦合，可独立分发（详见文档 §7B / §9）
+#
+# 项目专属变量(Variables):
+#   REGISTRY              默认 registry.cn-hangzhou.aliyuncs.com (Docker Hub 留空 "")
+#   DOCKER_IMAGE         <namespace>/<project>，如 liaozhiming/vue_tuiwen
+#   STATIC_BUILD_CMD     前端构建命令，如 npm run build
+#   STATIC_DIST_DIR      构建产物目录，如 dist（默认 dist）
+#   ASSETS_DOCKERFILE    Dockerfile.assets 路径，默认 docker-assets/Dockerfile.assets
+# Secrets（真实命名，ACR 与 Docker Hub 共用）:
+#   DOCKER_USERNAME
+#   DOCKER_PASSWORD
+# 用户自定义步骤: 在仓库 hooks/ 下放 pre-build.sh / post-build.sh 即被调用（详见 hooks/README.md）。
+# =============================================================================
+name: Docker Assets
+
+on:
+  push:
+    tags: ['v*']
+    branches: [main]
+    # 仅当静态相关文件变化时构建，避免后端改动也重推静态镜像
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'dist/**'
+      - 'package.json'
+      - 'vite.config.*'
+      - 'Dockerfile.assets'
+      - 'docker-assets/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ${{ vars.REGISTRY || 'registry.cn-hangzhou.aliyuncs.com' }}
+  IMAGE_NAME: ${{ vars.DOCKER_IMAGE }}
+  STATIC_BUILD_CMD: ${{ vars.STATIC_BUILD_CMD || 'npm run build' }}
+  STATIC_DIST_DIR: ${{ vars.STATIC_DIST_DIR || 'dist' }}
+  ASSETS_DOCKERFILE: ${{ vars.ASSETS_DOCKERFILE || 'docker-assets/Dockerfile.assets' }}
+
+jobs:
+  build-assets:
+    # 设 ENABLE_DOCKER_ASSETS=false 可禁用本工作流（无前端静态资源的项目）
+    if: ${{ vars.ENABLE_DOCKER_ASSETS != 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Custom pre-build hook (hooks/pre-build.sh)
+        if: ${{ hashFiles('hooks/pre-build.sh') != '' }}
+        run: bash hooks/pre-build.sh
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build static assets (compile to HTML)
+        run: ${{ env.STATIC_BUILD_CMD }}
+
+      - name: Set up QEMU (多架构)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY != '' && env.REGISTRY || 'docker.io' }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # 版本号(优先 git tag，其次 VERSION) + 自增长构建号(run_number)
+      - name: Generate build metadata
+        id: build
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then VERSION="${GITHUB_REF_NAME#v}"
+          elif [ -f VERSION ]; then VERSION="$(tr -d '[:space:]' < VERSION)"
+          else VERSION="0.0.0"; fi
+          BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          GIT_SHA_SHORT="${GITHUB_SHA::7}"
+          FULL_VERSION="${VERSION}-b${BUILD_NUMBER}"
+          { echo "version=$VERSION"; echo "build_number=$BUILD_NUMBER"; echo "build_date=$BUILD_DATE";
+            echo "git_sha=$GIT_SHA_SHORT"; echo "full_version=$FULL_VERSION"; } >> "$GITHUB_OUTPUT"
+
+      - name: Docker meta (tags: sha / full_version / semver / latest，带 -assets 后缀)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY != '' && format('{0}/{1}', env.REGISTRY, env.IMAGE_NAME) || env.IMAGE_NAME }}
+          # 所有标签统一追加 -assets 后缀，与运行镜像区分
+          flavor: |
+            suffix=-assets,onlatest=true
+          tags: |
+            type=sha,enable=true,priority=100,prefix=sha-,format=short
+            type=raw,value=${{ steps.build.outputs.full_version }}
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.build.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.build.outputs.build_date }}
+            build.number=${{ steps.build.outputs.build_number }}
+            build.date=${{ steps.build.outputs.build_date }}
+            build.full_version=${{ steps.build.outputs.full_version }}
+
+      - name: Build and push static assets image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ env.ASSETS_DOCKERFILE }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_VERSION=${{ steps.build.outputs.full_version }}
+            BUILD_NUMBER=${{ steps.build.outputs.build_number }}
+            BUILD_DATE=${{ steps.build.outputs.build_date }}
+            GIT_SHA=${{ steps.build.outputs.git_sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Custom post-build hook (hooks/post-build.sh)
+        if: ${{ hashFiles('hooks/post-build.sh') != '' }}
+        run: bash hooks/post-build.sh
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
