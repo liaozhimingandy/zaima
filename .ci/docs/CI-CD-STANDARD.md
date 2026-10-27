@@ -396,7 +396,8 @@ ci-cd-template/          # ★ 整个文件夹拷到项目即可
       ├── project.config.yaml
       ├── workflows/  hooks/  docker-assets/  scripts/  docs/  examples/
   ```
-- **配置落点**：`.ci/project.config.yaml`（记录）→ `.ci/scripts/apply-github-config.sh`（写入 GitHub Variables）→ GitHub 网页 Variables/Secrets（CI 实际取值）。改配置后重跑 apply 脚本即可。
+- **配置来源**：CI **直接读取 `.ci/project.config.yaml`**（经 `.ci/scripts/read-config.sh`）；GitHub Variables 仅作缺省回退。改完提交即生效，不需要再同步 Variables。
+- **卸载**：`bash uninstall.sh <项目>`（`--dry-run` 预览、`--purge-config` 连配置删除）。只删 `.ci/.install-manifest` 记录的本模板文件，不碰你的代码与自有 `scripts/`、`docs/`。
 - **区分通用/专属**：`examples/` 以外基本通用；`examples/` 里的 `.example` 需按项目改。
 - **必须放在项目根**：工作流只有位于 `<项目>/.github/workflows/` 才生效（`ci-cd.yml` 已放根；模块化工作流在 `.ci/workflows/`，需要时再复制到 `.github/workflows/`）。
 
@@ -480,24 +481,24 @@ setup ─┬─ ci              测试/检查（PR 与 push 都跑，质量门�
 
 ## 17. 项目需要修改的变量（项目专属）
 
-📋 新项目只改这些（均为 GitHub Variables；`auto` 类无需改即可用）：
+📋 新项目只改这些（写在 `.ci/project.config.yaml`；`auto` 类无需改即可用）：
 
-| 变量 | 示例值 | 说明 |
-|---|---|---|
-| `PROJECT_TYPE` | `auto` / `backend` / `frontend` / `fullstack` | `auto`=按文件探测（默认） |
-| `ENABLE_DOCKER_APP` | `auto` / `true` / `false` | 应用镜像；`auto`=有 `Dockerfile` 即启用 |
-| `ENABLE_DOCKER_ASSETS` | `auto` / `true` / `false` | 静态资源独立镜像；`auto`=前端即启用 |
-| `ENABLE_STATIC_CLOUDFLARE` | `true` / `false` | Cloudflare Pages 部署（默认 false，需配 Secret） |
-| `REGISTRY` | `registry.cn-hangzhou.aliyuncs.com`（ACR）或 `""`（Docker Hub） | 与 Secret 对应 |
-| `DOCKER_IMAGE` | `liaozhiming/vue_tuiwen` | `<namespace>/<project>` |
-| `DOCKERFILE_PATH` | `Dockerfile` 或 `docker/latest/Dockerfile.nginx` | 多镜像时分别配置 |
-| `CLOUDFLARE_PROJECT` | `tuiwen` | Cloudflare Pages 项目名 |
-| `STATIC_BUILD_CMD` / `STATIC_DIST_DIR` | `npm run build` / `dist` | 编译 HTML 的命令与产物目录 |
-| `ASSETS_DOCKERFILE` | `.ci/docker-assets/Dockerfile.assets` | 静态资源独立镜像的 Dockerfile 路径 |
-| `PYTHON_VERSION` / `NODE_VERSION` | `3.14` / `22` | 语言运行时版本 |
+| 配置项（`.ci/project.config.yaml`） | 回退 Variables | 示例 | 说明 |
+|---|---|---|---|
+| `project.type` | `PROJECT_TYPE` | `auto` | `auto`=按文件探测 |
+| `enable.docker_app` | `ENABLE_DOCKER_APP` | `auto` | 应用镜像；有 `Dockerfile` 即启用 |
+| `enable.docker_assets` | `ENABLE_DOCKER_ASSETS` | `auto` | 静态资源独立镜像；前端即启用 |
+| `enable.static_cloudflare` | `ENABLE_STATIC_CLOUDFLARE` | `false` | Cloudflare Pages 部署 |
+| `docker.registry` | `REGISTRY` | `docker.io` 或 `registry.cn-hangzhou.aliyuncs.com` | 镜像仓库；**Docker Hub 填 `docker.io`** |
+| `docker.image` | `DOCKER_IMAGE` | `liaozhiming/vue_tuiwen` | `<namespace>/<project>` |
+| `docker.dockerfile` | `DOCKERFILE_PATH` | `Dockerfile` | 应用镜像 Dockerfile |
+| `static.build_command` | `STATIC_BUILD_CMD` | `npm run build` | 编译 HTML 的命令 |
+| `static.output_dir` | `STATIC_DIST_DIR` | `dist` | 构建产物目录（相对前端目录） |
+| `static.assets_image.dockerfile` | `ASSETS_DOCKERFILE` | `.ci/docker-assets/Dockerfile.assets` | 静态资源镜像 Dockerfile |
+| `cloudflare.project` | `CLOUDFLARE_PROJECT` | `tuiwen` | Pages 项目名 |
+| — | `PYTHON_VERSION` / `NODE_VERSION` | `3.14` / `22` | 语言运行时版本（仅 Variables） |
 
-> ⚠️ **版本号不再需要 `PROJECT_VERSION` 变量**：由 git `v*` tag 自动去 `v` 提取（见 §9、§13），避免人工维护不一致（修复 D7）。若有 `.ci/hooks/ci.sh` 等自定义脚本，按 `.ci/hooks/README.md` 放置即可。
-| `PORT` / `DOMAIN` | `8000` / `tuiwen.example.com` | 运行时专用 |
+> ⚠️ 版本号由 git `v*` tag 自动提取，无需 `PROJECT_VERSION`；运行时端口/时区等**不写入公共配置**（属项目自身运行参数）。
 
 ---
 

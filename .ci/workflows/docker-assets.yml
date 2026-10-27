@@ -70,7 +70,15 @@ jobs:
           elif [ "${{ steps.fe.outputs.frontend_pm }}" = "pnpm" ]; then corepack enable; pnpm install --frozen-lockfile
           elif [ "${{ steps.fe.outputs.frontend_pm }}" = "yarn" ]; then yarn install --frozen-lockfile
           else npm ci; fi
-          ${{ env.STATIC_BUILD_CMD }}
+          BUILD_CMD="${{ env.STATIC_BUILD_CMD }}"
+          DETECTED="${{ steps.fe.outputs.frontend_build_cmd }}"
+          if [ "$BUILD_CMD" = "npm run build" ] && [ -n "$DETECTED" ]; then BUILD_CMD="$DETECTED"; fi
+          if [ "$BUILD_CMD" = "npm run build" ] && [ "${{ steps.fe.outputs.frontend_has_build }}" != "true" ]; then
+            echo "::error::前端目录没有 build 脚本，请设置 STATIC_BUILD_CMD"
+            node -e "console.log(require('./package.json').scripts||{})" || true
+            exit 1
+          fi
+          $BUILD_CMD
 
       # 统一产物到仓库根 dist/（Dockerfile.assets 固定 COPY dist/）
       - name: Normalize dist to repo root

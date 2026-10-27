@@ -67,7 +67,15 @@ jobs:
           elif [ "${{ steps.fe.outputs.frontend_pm }}" = "pnpm" ]; then corepack enable; pnpm install --frozen-lockfile
           elif [ "${{ steps.fe.outputs.frontend_pm }}" = "yarn" ]; then yarn install --frozen-lockfile
           else npm ci; fi
-          ${{ env.BUILD_CMD }}
+          RUN_CMD="${{ env.BUILD_CMD }}"
+          DETECTED="${{ steps.fe.outputs.frontend_build_cmd }}"
+          if [ "$RUN_CMD" = "npm run build" ] && [ -n "$DETECTED" ]; then RUN_CMD="$DETECTED"; fi
+          if [ "$RUN_CMD" = "npm run build" ] && [ "${{ steps.fe.outputs.frontend_has_build }}" != "true" ]; then
+            echo "::error::前端目录没有 build 脚本，请设置 STATIC_BUILD_CMD"
+            node -e "console.log(require('./package.json').scripts||{})" || true
+            exit 1
+          fi
+          $RUN_CMD
           # SPA 回退：保证前端路由 404 兜底（vue 真实做法）
           cp "${{ env.DIST_DIR }}/index.html" "${{ env.DIST_DIR }}/404.html" 2>/dev/null || true
 

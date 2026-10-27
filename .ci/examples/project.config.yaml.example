@@ -1,7 +1,7 @@
 # =============================================================================
-# project.config.yaml -- 项目专属配置（单一来源，公共模板不触碰此文件）
-# 仅填写与默认值不同的项；其余交给公共模板。
-# 注意：本文件是人类可读的「配置清单」；实际 CI 取值来自 GitHub Variables（同名键）。
+# .ci/project.config.yaml -- 项目专属配置（单一来源）
+# CI 直接读取本文件（.ci/scripts/read-config.sh）；GitHub Variables 仅作缺省回退。
+# 改完无需再同步 Variables；如需回退到 Variables，删掉对应项即可。
 # =============================================================================
 project:
   name: rhapsody                 # 项目名（仓库名）
@@ -25,16 +25,16 @@ static:
   build_command: npm run build
   output_dir: dist
   assets_image:                  # 静态资源独立镜像（scratch，可独立分发）
-    dockerfile: docker-assets/Dockerfile.assets
+    dockerfile: .ci/docker-assets/Dockerfile.assets
     # 构建产物镜像标签: <image>:<version>-assets / :latest-assets / :sha-xxxx-assets
 
 cloudflare:
   project: ""                    # Cloudflare Pages 项目名（enable.static_cloudflare=true 时必填）
 
-# ---- 可选：自定义步骤钩子（在仓库 hooks/ 下放同名脚本即生效，详见 hooks/README.md） ----
+# ---- 可选：自定义步骤钩子（在 .ci/hooks/ 下放同名脚本即生效，详见 .ci/hooks/README.md） ----
 # hooks:
-#   ci: hooks/ci.sh
-#   pre_build: hooks/pre-build.sh
-#   post_build: hooks/post-build.sh
-#   pre_deploy: hooks/pre-deploy.sh
-#   post_deploy: hooks/post-deploy.sh
+#   ci: .ci/hooks/ci.sh
+#   pre_build: .ci/hooks/pre-build.sh
+#   post_build: .ci/hooks/post-build.sh
+#   pre_deploy: .ci/hooks/pre-deploy.sh
+#   post_deploy: .ci/hooks/post-deploy.sh

@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # =============================================================================
-# detect-frontend.sh -- 自动定位前端工程目录、锁文件与包管理器
+# detect-frontend.sh -- 自动定位前端工程目录、锁文件、包管理器与构建脚本
 #
-# 解决的问题：
+# 解决问题：
 #   1) 前端不一定在仓库根（可能在 frontend/ web/ client/ 等子目录）
-#   2) actions/setup-node 的 cache 必须与包管理器匹配，否则报
-#      “Dependencies lock file is not found”
+#   2) setup-node 的 cache 必须与包管理器匹配，否则报 “Dependencies lock file is not found”
+#   3) 仓库根可能有一个“工具型” package.json（无 build），真正前端在子目录
+#
+# 选择规则（打分）：有 build 脚本 +2，有锁文件 +1，路径越浅越优先。
 #
 # 输出（KEY=VALUE，可直接 >> $GITHUB_OUTPUT）：
-#   frontend_dir   前端目录（相对仓库根；无则 "."）
-#   frontend_lock  锁文件路径（无则空）
-#   frontend_pm    包管理器：npm / yarn / pnpm（默认 npm）
-#   has_frontend   true/false
+#   frontend_dir / frontend_lock / frontend_pm / has_frontend
+#   frontend_has_build / frontend_build_script / frontend_build_cmd
 # =============================================================================
 set -euo pipefail
 
@@ -25,10 +25,12 @@ list_pkgs() {
     -not -path './.ci/*' 2>/dev/null | sort
 }
 
-best=""; best_lock=""; best_pm="npm"
+best=""; best_lock=""; best_pm="npm"; best_script=""; best_rank=-999
 while IFS= read -r pkg; do
   [ -n "$pkg" ] || continue
   d=$(dirname "$pkg"); d="${d#./}"; [ -z "$d" ] && d="."
+
+  # 锁文件与包管理器
   lock=""; pm="npm"
   for l in package-lock.json npm-shrinkwrap.json yarn.lock pnpm-lock.yaml; do
     if [ -f "$d/$l" ]; then
@@ -41,11 +43,22 @@ while IFS= read -r pkg; do
       break
     fi
   done
-  if [ -n "$lock" ]; then
-    # 有锁文件优先；多个时取路径最短（最浅）
-    if [ -z "$best_lock" ] || [ "${#d}" -lt "${#best}" ]; then best="$d"; best_lock="$lock"; best_pm="$pm"; fi
-  elif [ -z "$best" ]; then
-    best="$d"
+
+  # 构建脚本：优先精确 build；否则任取一个 build:*（如 build:h5 / build:prod / build:web）
+  script=""
+  if grep -Eq '"build"[[:space:]]*:' "$pkg"; then
+    script="build"
+  else
+    script="$(grep -oE '"build:[a-zA-Z0-9._-]+"[[:space:]]*:' "$pkg" 2>/dev/null | head -1 | sed -E 's/^"([^"]+)".*/\1/' || true)"
+  fi
+
+  # 打分：build 脚本 +2，锁文件 +1；深度越浅越优先
+  score=0; [ -n "$script" ] && score=$((score+2)); [ -n "$lock" ] && score=$((score+1))
+  depth=$(awk -F/ '{print NF-1}' <<< "$pkg")
+  rank=$((score*10 - depth))
+
+  if [ "$rank" -gt "$best_rank" ]; then
+    best="$d"; best_lock="$lock"; best_pm="$pm"; best_script="$script"; best_rank="$rank"
   fi
 done < <(list_pkgs)
 
@@ -53,5 +66,8 @@ echo "frontend_dir=${best:-.}"
 echo "frontend_lock=${best_lock}"
 echo "frontend_pm=${best_pm:-npm}"
 echo "has_frontend=$([ -n "$best" ] && echo true || echo false)"
+echo "frontend_has_build=$([ -n "$best_script" ] && echo true || echo false)"
+echo "frontend_build_script=${best_script}"
+echo "frontend_build_cmd=$([ -n "$best_script" ] && echo "npm run $best_script" || echo "")"
 
-echo "detected frontend: dir=${best:-.} lock=${best_lock:-<none>} pm=${best_pm:-npm}" >&2
+echo "detected frontend: dir=${best:-.} lock=${best_lock:-<none>} pm=${best_pm:-npm} build=${best_script:-<none>}" >&2
