@@ -567,7 +567,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dist --project-name=${{ needs.setup.outputs.cloudflare_project }} --branch main
+          command: pages deploy dist/build/h5 --project-name=${{ needs.setup.outputs.cloudflare_project }} --branch main
 
       - name: Custom hook — post-deploy.sh
         if: ${{ hashFiles('.ci/hooks/post-deploy.sh') != '' }}
