@@ -60,6 +60,8 @@ jobs:
       app_image: ${{ steps.calc.outputs.app_image }}
       tags: ${{ steps.calc.outputs.tags }}
       app_tags: ${{ steps.calc.outputs.app_tags }}
+      h5_tags: ${{ steps.calc.outputs.h5_tags }}
+      h5_assets_tags: ${{ steps.calc.outputs.h5_assets_tags }}
       should_push: ${{ steps.calc.outputs.should_push }}
       is_release: ${{ steps.calc.outputs.is_release }}
       is_prerelease: ${{ steps.calc.outputs.is_prerelease }}
@@ -189,6 +191,19 @@ jobs:
             APP_TAGS=$(printf '%s\n' "${APP_TAGS}" | awk 'NF && !seen[$0]++')
           fi
 
+          # 前端 H5 镜像：与后端同仓库，用 h5- / h5-assets- 前缀区分。
+          # main 与稳定发布都滚动 h5-latest；预发布不覆盖 latest。
+          H5_TAGS="${IMAGE}:h5-${VERSION}"
+          H5_TAGS="${H5_TAGS}"$'\n'"${IMAGE}:h5-sha-${SHORT_SHA}"
+          H5_ASSETS_TAGS="${IMAGE}:h5-assets-${VERSION}"
+          H5_ASSETS_TAGS="${H5_ASSETS_TAGS}"$'\n'"${IMAGE}:h5-assets-sha-${SHORT_SHA}"
+          if { [ "${IS_RELEASE}" = "true" ] && [ "${IS_PRERELEASE}" != "true" ]; } || { [ "${EVENT_NAME}" = "push" ] && [ "${REF_NAME}" = "main" ]; }; then
+            H5_TAGS="${H5_TAGS}"$'\n'"${IMAGE}:h5-latest"
+            H5_ASSETS_TAGS="${H5_ASSETS_TAGS}"$'\n'"${IMAGE}:h5-assets-latest"
+          fi
+          H5_TAGS=$(printf '%s\n' "${H5_TAGS}" | awk 'NF && !seen[$0]++')
+          H5_ASSETS_TAGS=$(printf '%s\n' "${H5_ASSETS_TAGS}" | awk 'NF && !seen[$0]++')
+
           {
             echo "version=${VERSION}"
             echo "short_sha=${SHORT_SHA}"
@@ -204,6 +219,12 @@ jobs:
             echo "app_tags<<APP_TAGS_EOF"
             echo "${APP_TAGS}"
             echo "APP_TAGS_EOF"
+            echo "h5_tags<<H5_TAGS_EOF"
+            echo "${H5_TAGS}"
+            echo "H5_TAGS_EOF"
+            echo "h5_assets_tags<<H5_ASSETS_EOF"
+            echo "${H5_ASSETS_TAGS}"
+            echo "H5_ASSETS_EOF"
           } >> "$GITHUB_OUTPUT"
 
           {
@@ -450,6 +471,91 @@ jobs:
       - name: Android / iOS 构建能力检查
         run: |
           echo "::notice title=App 原生构建未配置::uni-app 的 Android/iOS 安装包需要 HBuilderX 云打包或离线原生工程 + 签名证书，当前仓库未配置，本流程不产出 ipa/apk（H5 产物不能代替原生安装包）。"
+
+  # ------------------------------------------------------------------
+  # 4.5 前端 H5 镜像（复用上面已构建的 H5 产物，不重复构建）
+  # ------------------------------------------------------------------
+  h5-images:
+    name: H5 镜像（nginx / scratch）
+    needs: [meta, frontend-artifacts]
+    # H5 构建被关闭时跳过（没有产物可复用）
+    if: ${{ vars.BUILD_H5 != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # 拉取源码（只需要 Dockerfile / Dockerfile.nginx）
+      - name: 检出代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # 直接复用 frontend-artifacts 上传的 H5 产物到 h5-dist/，避免二次 npm build
+      - name: 下载 H5 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: zaima-frontend-h5-${{ needs.meta.outputs.version }}-${{ needs.meta.outputs.short_sha }}
+          path: h5-dist
+
+      # 产物缺失时给出清晰报错，而不是 Docker 的 cache key 错误
+      - name: 校验 H5 产物
+        run: test -f h5-dist/index.html || { echo "::error::h5-dist/index.html 缺失"; ls -la h5-dist || true; exit 1; }
+
+      # 启用 Buildx 并利用 GHA 缓存
+      - name: 配置 Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # 仅推送时登录
+      - name: 登录 Docker Hub
+        if: needs.meta.outputs.should_push == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME || vars.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN || secrets.DOCKER_PASSWORD }}
+
+      # 可运行测试镜像：nginx:alpine + 产物 → zaima:h5-*
+      - name: 构建并推送 H5 nginx 镜像
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Dockerfile.nginx
+          push: ${{ needs.meta.outputs.should_push == 'true' }}
+          tags: ${{ needs.meta.outputs.h5_tags }}
+          cache-from: type=gha,scope=zaima-h5
+          cache-to: type=gha,scope=zaima-h5,mode=max
+          provenance: false
+          sbom: false
+
+      # 纯产物镜像：scratch 空根 → zaima:h5-assets-*
+      - name: 构建并推送 H5 静态产物镜像
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: ${{ needs.meta.outputs.should_push == 'true' }}
+          tags: ${{ needs.meta.outputs.h5_assets_tags }}
+          cache-from: type=gha,scope=zaima-h5-assets
+          cache-to: type=gha,scope=zaima-h5-assets,mode=max
+          provenance: false
+          sbom: false
+
+      # 冒烟：拉起 nginx 镜像确认首页可访问
+      - name: H5 nginx 镜像冒烟
+        if: needs.meta.outputs.should_push == 'true'
+        run: |
+          set -euo pipefail
+          REF=$(printf '%s\n' "${{ needs.meta.outputs.h5_tags }}" | head -1)
+          docker pull "${REF}"
+          docker run -d --name h5-smoke -p 18080:80 "${REF}"
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/ -o /tmp/index.html 2>/dev/null; then ok=1; break; fi
+            sleep 1
+          done
+          test "${ok}" = "1" || { echo "::error::H5 nginx 镜像启动失败"; docker logs h5-smoke; exit 1; }
+          grep -qi '<div id="app"' /tmp/index.html || { echo "::error::首页未返回 H5 入口"; cat /tmp/index.html; exit 1; }
+          echo "H5 nginx 镜像冒烟通过"
+          docker rm -f h5-smoke
 
   # ------------------------------------------------------------------
   # 5. Docker 镜像构建与条件推送
@@ -795,7 +901,7 @@ jobs:
   # ------------------------------------------------------------------
   report:
     name: 发布报告
-    needs: [meta, backend-tests, frontend-checks, frontend-artifacts, docker, github-release]
+    needs: [meta, backend-tests, frontend-checks, frontend-artifacts, h5-images, docker, github-release]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -811,6 +917,7 @@ jobs:
           R_BACKEND: ${{ needs.backend-tests.result }}
           R_FRONTEND: ${{ needs.frontend-checks.result }}
           R_ARTIFACTS: ${{ needs.frontend-artifacts.result }}
+          R_H5: ${{ needs.h5-images.result }}
           R_DOCKER: ${{ needs.docker.result }}
           R_RELEASE: ${{ needs.github-release.result }}
         run: |
@@ -834,7 +941,8 @@ jobs:
             echo "| 后端测试 | ${R_BACKEND} |"
             echo "| 前端检查 | ${R_FRONTEND} |"
             echo "| 前端产物 | ${R_ARTIFACTS} |"
-            echo "| 镜像构建/推送 | ${R_DOCKER} |"
+            echo "| H5 镜像（nginx/scratch） | ${R_H5} |"
+            echo "| 后端/一体化镜像 | ${R_DOCKER} |"
             echo "| GitHub Release | ${R_RELEASE} |"
             echo ""
             echo "### 产物"
@@ -845,7 +953,7 @@ jobs:
             echo "| Artifact | \`zaima-frontend-mp-weixin-${VERSION}-${SHORT_SHA}\` |"
             echo "| Artifact | \`zaima-frontend-mp-alipay-${VERSION}-${SHORT_SHA}\` |"
             echo "| Artifact | \`image-manifest-${VERSION}-${SHORT_SHA}\` |"
-            echo "| 镜像 | \`${IMAGE_NAME}:${VERSION}\`（是否推送：\`${SHOULD_PUSH}\`） |"
+            echo "| 镜像 | \`${IMAGE_NAME}:${VERSION}\` / \`${IMAGE_NAME}:app-${VERSION}\` / \`${IMAGE_NAME}:h5-${VERSION}\`（是否推送：\`${SHOULD_PUSH}\`） |"
             echo ""
             echo "> 详细镜像标签与 Digest 见上一步「镜像构建与发布」的摘要。"
             echo "> 只有全部阶段为 \`success\`（跳过项显示 \`skipped\`）时，本次发布才算完成。"

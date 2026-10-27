@@ -5,8 +5,8 @@ name: 构建原生 App 安装包（Android / iOS 离线打包）
 # 不依赖 DCloud 云打包（避开中国区账号 CLI 登录的已知 bug，也不消耗云打包额度）。
 #
 # 触发方式：
-#   1) 手动：Actions → 本工作流 → Run workflow，选择 android / ios / both
-#   2) 打 tag：推送 v* 标签时自动构建 both
+#   手动：Actions → 本工作流 → Run workflow，选择 android / ios / both
+#   （暂不随 tag 自动触发：缺少离线 SDK / 签名证书时会必然失败，等配置好后再启用 on.push.tags）
 #
 # 离线 SDK 壳工程来源（详见 docs/APP_PACKAGING.md）：
 #   DCloud 官方现仅通过百度云/和彩云网盘分发离线 SDK（无 CI 可直链地址），
@@ -28,11 +28,6 @@ on:
           - android
           - ios
           - both
-  # 推送 v* 标签时自动构建两个平台
-  push:
-    tags:
-      - 'v*'
-
 permissions:
   contents: read
 
