@@ -15,7 +15,7 @@
 #   DOCKER_USERNAME
 #   DOCKER_PASSWORD
 # 注: 版本号由 git tag 自动提取，无需 PROJECT_VERSION 变量。
-# 用户自定义步骤: 在仓库 hooks/ 下放 pre-build.sh / post-build.sh 即被调用（详见 hooks/README.md）。
+# 用户自定义步骤: 在仓库 .ci/hooks/ 下放 pre-build.sh / post-build.sh 即被调用（详见 .ci/hooks/README.md）。
 # =============================================================================
 name: Docker
 
@@ -44,9 +44,9 @@ jobs:
         with:
           fetch-depth: 0   # 取完整历史，便于读取 git tag / sha
 
-      - name: Custom pre-build hook (hooks/pre-build.sh)
-        if: ${{ hashFiles('hooks/pre-build.sh') != '' }}
-        run: bash hooks/pre-build.sh
+      - name: Custom pre-build hook (.ci/hooks/pre-build.sh)
+        if: ${{ hashFiles('.ci/hooks/pre-build.sh') != '' }}
+        run: bash .ci/hooks/pre-build.sh
 
       - name: Set up QEMU (多架构)
         uses: docker/setup-qemu-action@v3
@@ -118,8 +118,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Custom post-build hook (hooks/post-build.sh)
-        if: ${{ hashFiles('hooks/post-build.sh') != '' }}
-        run: bash hooks/post-build.sh
+      - name: Custom post-build hook (.ci/hooks/post-build.sh)
+        if: ${{ hashFiles('.ci/hooks/post-build.sh') != '' }}
+        run: bash .ci/hooks/post-build.sh
         env:
           IMAGE_TAGS: ${{ steps.meta.outputs.tags }}

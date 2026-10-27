@@ -4,8 +4,8 @@
 # 注意：本文件是人类可读的「配置清单」；实际 CI 取值来自 GitHub Variables（同名键）。
 # =============================================================================
 project:
-  name: zaima                 # 项目名（仓库名）
-  version: 1.0.1                # 语义化版本（CI/镜像 tag 来源）
+  name: rhapsody                 # 项目名（仓库名）
+  version: 7.4.0                 # 语义化版本（CI/镜像 tag 来源）
   license: MIT
   type: auto                     # auto | backend | frontend | fullstack（auto=按文件探测）
 
@@ -16,8 +16,8 @@ enable:
   static_cloudflare: false      # Cloudflare Pages 部署：需显式 true 并配 Secret
 
 docker:
-  registry: ""   # 默认阿里云 ACR；Docker Hub 留空 ""
-  image: liaozhiming/zaima     # <namespace>/<project>
+  registry: registry.cn-hangzhou.aliyuncs.com   # 阿里云 ACR；Docker Hub 填 docker.io（勿留空）
+  image: liaozhiming/rhapsody     # <namespace>/<project>
   dockerfile: Dockerfile          # 多服务时另起 Dockerfile-<svc>
   platforms: linux/amd64,linux/arm64
 
@@ -29,8 +29,7 @@ static:
     # 构建产物镜像标签: <image>:<version>-assets / :latest-assets / :sha-xxxx-assets
 
 cloudflare:
-  project: "zaima"                    # Cloudflare Pages 项目名（enable.static_cloudflare=true 时必填）
-
+  project: ""                    # Cloudflare Pages 项目名（enable.static_cloudflare=true 时必填）
 
 # ---- 可选：自定义步骤钩子（在仓库 hooks/ 下放同名脚本即生效，详见 hooks/README.md） ----
 # hooks:

@@ -19,6 +19,6 @@
   - `IS_BACKEND` / `IS_FRONTEND`： `true`/`false`
   - `IMAGE_TAGS`：本次构建的镜像标签列表（构建类钩子）
   - `DEPLOY_URL`：Cloudflare 部署后的预览/生产地址（部署类钩子）
-- 工作流通过 `bash hooks/<name>.sh` 调用，因此脚本需有读权限（无需可执行位）。
+- 工作流通过 `bash .ci/hooks/<name>.sh` 调用，因此脚本需有读权限（无需可执行位）。
 
 > 这些钩子是「预留的用户自定义步骤」：公共模板本身不实现任何业务命令，全部留给项目填充。

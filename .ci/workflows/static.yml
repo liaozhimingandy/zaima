@@ -11,7 +11,7 @@
 # Secrets:
 #   CLOUDFLARE_API_TOKEN  (需 Account > Cloudflare Pages > Edit)
 #   CLOUDFLARE_ACCOUNT_ID
-# 用户自定义步骤: 在仓库 hooks/ 下放 pre-deploy.sh / post-deploy.sh 即被调用（详见 hooks/README.md）。
+# 用户自定义步骤: 在仓库 .ci/hooks/ 下放 pre-deploy.sh / post-deploy.sh 即被调用（详见 .ci/hooks/README.md）。
 # =============================================================================
 name: Deploy Static (Cloudflare Pages)
 
@@ -19,11 +19,8 @@ on:
   push:
     tags: ['v*']
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'public/**'
-      - '!.github/**'
-      - '!**/*.md'
+  workflow_dispatch:
+  # 说明：不设 paths 过滤，避免前端位于子目录时漏触发；tag 发版也必触发。
 
 permissions:
   contents: read
@@ -44,27 +41,41 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Custom pre-deploy hook (hooks/pre-deploy.sh)
-        if: ${{ hashFiles('hooks/pre-deploy.sh') != '' }}
-        run: bash hooks/pre-deploy.sh
+      - name: Custom pre-deploy hook (.ci/hooks/pre-deploy.sh)
+        if: ${{ hashFiles('.ci/hooks/pre-deploy.sh') != '' }}
+        run: bash .ci/hooks/pre-deploy.sh
         env:
           CLOUDFLARE_PROJECT: ${{ env.PROJECT }}
           STATIC_DIST_DIR: ${{ env.DIST_DIR }}
+
+      # 自动定位前端目录与锁文件（前端可能在子目录）
+      - name: Detect frontend dir
+        id: fe
+        run: bash .ci/scripts/detect-frontend.sh >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
+          cache: ${{ steps.fe.outputs.frontend_lock != '' && steps.fe.outputs.frontend_pm || '' }}
+          cache-dependency-path: ${{ steps.fe.outputs.frontend_lock }}
 
       - name: Build (compile to HTML)
+        working-directory: ${{ steps.fe.outputs.frontend_dir }}
         run: |
+          if [ -z "${{ steps.fe.outputs.frontend_lock }}" ]; then npm install
+          elif [ "${{ steps.fe.outputs.frontend_pm }}" = "pnpm" ]; then corepack enable; pnpm install --frozen-lockfile
+          elif [ "${{ steps.fe.outputs.frontend_pm }}" = "yarn" ]; then yarn install --frozen-lockfile
+          else npm ci; fi
           ${{ env.BUILD_CMD }}
           # SPA 回退：保证前端路由 404 兜底（vue 真实做法）
           cp "${{ env.DIST_DIR }}/index.html" "${{ env.DIST_DIR }}/404.html" 2>/dev/null || true
+
+      # 统一产物到仓库根 dist/，供 Cloudflare 部署
+      - name: Normalize dist to repo root
+        run: |
+          SRC="${{ steps.fe.outputs.frontend_dir }}/${{ env.DIST_DIR }}"
+          if [ "$SRC" != "dist" ] && [ "$SRC" != "./dist" ]; then rm -rf dist; cp -r "$SRC" dist; fi
 
       - name: Deploy to Cloudflare Pages
         id: deploy
@@ -72,11 +83,11 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy ${{ env.DIST_DIR }} --project-name=${{ env.PROJECT }} --branch main
+          command: pages deploy dist --project-name=${{ env.PROJECT }} --branch main
 
-      - name: Custom post-deploy hook (hooks/post-deploy.sh)
-        if: ${{ hashFiles('hooks/post-deploy.sh') != '' }}
-        run: bash hooks/post-deploy.sh
+      - name: Custom post-deploy hook (.ci/hooks/post-deploy.sh)
+        if: ${{ hashFiles('.ci/hooks/post-deploy.sh') != '' }}
+        run: bash .ci/hooks/post-deploy.sh
         env:
           CLOUDFLARE_PROJECT: ${{ env.PROJECT }}
           DEPLOY_URL: ${{ steps.deploy.outputs.deployment-url }}

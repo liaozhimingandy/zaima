@@ -65,24 +65,25 @@ docker compose / 部署          CDN
 
 ```text
 project/
-├── .github/workflows/   # ✅ fastapi: docker-build.yaml；vue: build.yml + docker.yml
-│                        # 📋 公共模板: ci-cd.yml(统一) / ci.yml / docker.yml / docker-assets.yml / static.yml / release.yml
-├── .github/ISSUE_TEMPLATE/  pull_request_template.md  CODEOWNERS
-├── hooks/               # 📋 用户自定义步骤（可选）: ci.sh / pre-build.sh / post-build.sh / pre-deploy.sh / post-deploy.sh
-├── docs/                # ✅ AlphaQuant、fastapi 均有
-├── scripts/             # ✅ vue 有 build-*.sh / push-images.sh；AlphaQuant 有审计脚本
+├── .github/workflows/ci-cd.yml  # 📋 唯一写到根的工作流（GitHub 只认这里）
+├── .ci/                         # 📋 其余公共模板全部收在此，不干扰原有结构
+│   ├── project.config.yaml      # 项目配置记录（人类可读）
+│   ├── workflows/               # 模块化工作流（可选）
+│   ├── hooks/                   # 用户自定义步骤（可选）
+│   ├── docker-assets/           # 静态资源独立镜像 Dockerfile.assets
+│   ├── scripts/                 # apply-github-config / bump_version / detect-frontend
+│   ├── docs/                    # 本手册
+│   └── examples/                # .dockerignore / .gitattributes 示例
 ├── src/ 或 app/
 ├── tests/ 或 test_*.py / scripts/smoke_*
-├── Dockerfile           # ✅ fastapi 单文件；vue 用 docker/<ver>/Dockerfile.*
-├── docker/<ver>/        # ✅ vue 多镜像变体目录（含 .env 存版本号）
-├── docker-assets/        # 📋 静态资源独立镜像 Dockerfile.assets（仅前端启用）
-├── docker-compose.yml   # ✅ fastapi
+├── frontend/ 或 web/            # 前端可在子目录（自动探测 package.json/锁文件）
+├── Dockerfile                   # ✅ fastapi 单文件；vue 用 docker/<ver>/Dockerfile.*
+├── docker-compose.yml           # ✅ fastapi
 ├── .dockerignore  .gitignore  .gitattributes
-├── VERSION              # ✅ fastapi（版本单一来源之一）
+├── VERSION                      # ✅ fastapi（版本单一来源之一）
 ├── .env.example / .env.production  # ✅ 提交示例/生产配置，密钥走 *_FILE
 ├── pyproject.toml 或 package.json  # ✅ 含版本号（后端/前端的自动探测依据）
-├── LICENSE  README.md  CHANGELOG.md # ✅ 三件套，vue/fastapi 已有 CHANGELOG
-└── project.config.yaml  # 📋 项目专属配置单一来源（人类可读清单）
+└── LICENSE  README.md  CHANGELOG.md # ✅ 三件套
 ```
 
 ---
@@ -160,7 +161,7 @@ CMD ["fastapi","run","main.py","--host","0.0.0.0","--port","8000","--proxy-heade
 
 把「静态文件」与「运行时不耦合」，单独打成一个**空镜像层（`scratch`）镜像**，可独立构建、推送、拉取、分发，供多个下游镜像（nginx / standalone）或边缘节点共用。
 
-- **构建**：`Dockerfile.assets` 以 `FROM scratch` 为基础，仅 `COPY dist/ /usr/share/nginx/html/`，产物即镜像（模板见本交付 `docker-assets/Dockerfile.assets`）。
+- **构建**：`Dockerfile.assets` 以 `FROM scratch` 为基础，仅 `COPY dist/ /usr/share/nginx/html/`，产物即镜像（模板见本交付 `.ci/docker-assets/Dockerfile.assets`）。
 - **标签**：`<repo>:<ver>-assets` + `:latest-assets` + `:sha-xxxx-assets`（见 §9、docker-assets.yml）。
 - **消费**：`Dockerfile.nginx` / `Dockerfile.standalone` 用 `COPY --from=<repo>:<ver>-assets /usr/share/nginx/html /usr/share/nginx/html` 取资源，无需各自重新 build 前端。
 - **收益**：① 静态资源可单独 CI/CD（改前端不影响后端/运行镜像）；② 体积远小于含 nginx 的镜像，分发快；③ 多架构只需构建一次；④ 支持「一份资源，多处挂载/复制」。
@@ -195,7 +196,9 @@ ubuntu:24.04 + 阿里云 apt 源 + OpenJDK17 + 静默安装引擎 + 时区 Asia/
 | 目标 | REGISTRY 值 | 镜像全名示例 |
 |---|---|---|
 | 阿里云 ACR（fastapi 真实默认） | `registry.cn-hangzhou.aliyuncs.com` | `registry.cn-hangzhou.aliyuncs.com/liaozhiming/fastapi_tuiwen:0.3.1` |
-| Docker Hub（vue 真实） | 留空 `""` | `liaozhiming/vue_tuiwen:26.9.17` |
+| Docker Hub | **`docker.io`**（不要留空） | `docker.io/liaozhiming/vue_tuiwen:26.9.17`（短名 `liaozhiming/vue_tuiwen` 等价） |
+
+> ⚠️ 模板用 `vars.REGISTRY || 默认ACR` 取值，**留空会回退到 ACR**；Docker Hub 必须显式填 `docker.io`。安装向导已按此约定生成。
 
 > **迁移建议**：新项目二选一并写进 `project.config.yaml`；存量项目（rhapsody）compose 混用 Docker Hub 命名，应统一为单一 registry。
 
@@ -279,7 +282,7 @@ ubuntu:24.04 + 阿里云 apt 源 + OpenJDK17 + 静默安装引擎 + 时区 Asia/
 | `DOCKER_PASSWORD` | Secret | 镜像仓库密码/Token（ACR 或 Docker Hub） | **是** | GitHub Secrets |
 | `CLOUDFLARE_API_TOKEN` | Secret | Cloudflare API Token（Pages:Edit） | **是** | GitHub Secrets |
 | `CLOUDFLARE_ACCOUNT_ID` | Secret | Cloudflare 账户 ID | 视情况 | GitHub Secrets |
-| `REGISTRY` | Variable | 镜像仓库地址（ACR 默认；Docker Hub 留空） | 否 | GitHub Variables |
+| `REGISTRY` | Variable | 镜像仓库地址（ACR 默认；Docker Hub 填 `docker.io`） | 否 | GitHub Variables |
 | `DOCKER_IMAGE` | Variable | 镜像名 `<namespace>/<project>` | 否 | GitHub Variables |
 | `PROJECT_VERSION` | Variable | 语义化版本（CI 也可从 tag/VERSION 读取） | 否 | GitHub Variables |
 | `CLOUDFLARE_PROJECT` | Variable | Cloudflare Pages 项目名 | 否 | GitHub Variables |
@@ -384,9 +387,18 @@ ci-cd-template/          # ★ 整个文件夹拷到项目即可
 └── README.md            # 通用 vs 专属 对照表
 ```
 
-- **安全安装**：`bash install.sh /path/to/project`（或 `install.ps1 -Target ...`）。默认**跳过已存在文件**，绝不覆盖你的配置；`--dry-run` 可先预览。
-- **区分通用/专属**：`examples/` 以外基本通用；`examples/` 里的 `.example` 需按项目改（如 `project.config.yaml`）。
-- **必须放在项目根**：工作流只有位于 `<项目>/.github/workflows/` 才生效，`install.sh` 已按此结构落盘。
+- **交互式安装**：`bash install.sh /path/to/project`（`--yes` 全默认、`--dry-run` 预览、`--reconfigure` 改配置并自动备份 `.bak`）。向导自动探测项目、逐项询问（回车=默认），生成 `.ci/project.config.yaml` 与 `.ci/scripts/apply-github-config.sh`，并打印「在哪里调整」。默认**跳过已存在文件**，绝不覆盖。
+- **安装后布局**（不干扰原有 `scripts/`、`docs/`）：
+  ```text
+  <项目>/
+  ├── .github/workflows/ci-cd.yml   # 唯一写到根的工作流
+  └── .ci/                          # 其余全部在此
+      ├── project.config.yaml
+      ├── workflows/  hooks/  docker-assets/  scripts/  docs/  examples/
+  ```
+- **配置落点**：`.ci/project.config.yaml`（记录）→ `.ci/scripts/apply-github-config.sh`（写入 GitHub Variables）→ GitHub 网页 Variables/Secrets（CI 实际取值）。改配置后重跑 apply 脚本即可。
+- **区分通用/专属**：`examples/` 以外基本通用；`examples/` 里的 `.example` 需按项目改。
+- **必须放在项目根**：工作流只有位于 `<项目>/.github/workflows/` 才生效（`ci-cd.yml` 已放根；模块化工作流在 `.ci/workflows/`，需要时再复制到 `.github/workflows/`）。
 
 ### 16.1 模板清单
 
@@ -396,7 +408,7 @@ ci-cd-template/          # ★ 整个文件夹拷到项目即可
 - **`docker-assets.yml`** —— 把 `dist/` 打成 `scratch`「静态资源独立镜像」（`<ver>-assets`/`:latest-assets`/`:sha-xxxx-assets`），可独立分发（见 §7B）。
 - **`static.yml`** —— `cloudflare/wrangler-action@v4` 部署 Pages。
 - **`release.yml`** —— `v*` tag 自动生成 GitHub Release。
-- 支撑：`hooks/`（用户自定义步骤）、`pull_request_template.md`、`CODEOWNERS`、`ISSUE_TEMPLATE/bug_report.md`、`docker-assets/Dockerfile.assets`、`scripts/build_push_image.py`、`scripts/bump_version.sh`、`.dockerignore`/`.gitattributes`、`project.config.yaml`。
+- 支撑：`.ci/hooks/`（用户自定义步骤）、`pull_request_template.md`、`CODEOWNERS`、`ISSUE_TEMPLATE/bug_report.md`、`.ci/docker-assets/Dockerfile.assets`、`scripts/build_push_image.py`、`scripts/bump_version.sh`、`.dockerignore`/`.gitattributes`、`project.config.yaml`。
 
 > 选 `ci-cd.yml` 即可一个文件搞定；若项目希望把构建/部署拆成独立触发或独立权限，再拆用模块化 `ci/docker/docker-assets/static/release`。**两者共用同一套 Variables 与 hooks。**
 
@@ -407,13 +419,20 @@ ci-cd-template/          # ★ 整个文件夹拷到项目即可
 | 探测依据 | 判定 |
 |---|---|
 | 存在 `pyproject.toml` / `requirements.txt` / `setup.py` | `is_backend=true` → 跑 Python lint/test，启用应用镜像自动探测 |
-| 存在 `package.json` | `is_frontend=true` → 跑 Node lint/test，启用静态资源/Cloudflare 路径 |
+| 存在 `package.json`（**根或子目录均可，自动探测**） | `is_frontend=true` → 跑 Node lint/test，启用静态资源/Cloudflare 路径 |
 | 二者都有 | `type=fullstack` |
 | 存在 `Dockerfile`（或 `ENABLE_DOCKER_APP=true`） | 启用「应用镜像」构建 |
 | 存在 `package.json` 且 `ENABLE_DOCKER_ASSETS!=false` | 启用「静态资源独立镜像」 |
 | `ENABLE_STATIC_CLOUDFLARE=true` | 启用 Cloudflare Pages 部署 |
 
 变量均为 `auto` 时**零配置即可用**；按需用 `true/false` 覆盖。
+
+**前端目录自动探测（`.ci/scripts/detect-frontend.sh`）**：
+- 在 `frontend/`、`web/`、`client/` 等子目录找 `package.json`（排除 `node_modules`/`.git`/`.ci`），优先带锁文件的目录。
+- 输出 `frontend_dir` 与 `frontend_lock`；所有 `npm` 命令都在 `frontend_dir` 内执行。
+- **按锁文件识别包管理器**（npm / yarn / pnpm），`setup-node` 的 `cache` 与之匹配；
+- **无锁文件时不启用缓存**，并改用 `npm install`——彻底避免 `Dependencies lock file is not found`。
+- 编译产物统一归一化到仓库根 `dist/`，供镜像与 Cloudflare 复用。
 
 ### 16.3 是否需要「编译成 HTML」
 
@@ -425,17 +444,17 @@ ci-cd-template/          # ★ 整个文件夹拷到项目即可
 
 ### 16.4 预留用户自定义步骤（钩子机制）
 
-公共模板**不实现任何业务命令**，全部留给项目填充。在仓库根 `hooks/` 放入同名脚本即被自动调用（仅当文件存在时执行，不破坏既有流程）：
+公共模板**不实现任何业务命令**，全部留给项目填充。在仓库根 `.ci/hooks/` 放入同名脚本即被自动调用（仅当文件存在时执行，不破坏既有流程）：
 
 | 钩子文件 | 触发阶段 | 典型用途 |
 |---|---|---|
-| `hooks/ci.sh` | CI（lint/test 后） | 定制检查、类型检查、契约测试 |
-| `hooks/pre-build.sh` | 镜像构建前（app/assets） | 生成版本文件、拉私有依赖、注入构建参数 |
-| `hooks/post-build.sh` | 镜像推送后 | 漏洞扫描(trivy)、推送 SBOM、通知 |
-| `hooks/pre-deploy.sh` | Cloudflare 部署前 | 备份、预检 |
-| `hooks/post-deploy.sh` | Cloudflare 部署后 | 刷 CDN 缓存、健康检查、通知 |
+| `.ci/hooks/ci.sh` | CI（lint/test 后） | 定制检查、类型检查、契约测试 |
+| `.ci/hooks/pre-build.sh` | 镜像构建前（app/assets） | 生成版本文件、拉私有依赖、注入构建参数 |
+| `.ci/hooks/post-build.sh` | 镜像推送后 | 漏洞扫描(trivy)、推送 SBOM、通知 |
+| `.ci/hooks/pre-deploy.sh` | Cloudflare 部署前 | 备份、预检 |
+| `.ci/hooks/post-deploy.sh` | Cloudflare 部署后 | 刷 CDN 缓存、健康检查、通知 |
 
-钩子可读取工作流注入的环境变量：`PROJECT_TYPE` / `IS_BACKEND` / `IS_FRONTEND` / `IMAGE_TAGS` / `DEPLOY_URL` / `CLOUDFLARE_PROJECT` 等（详见 `hooks/README.md`）。返回非 0 会**阻断**该阶段，便于接入质量门禁。
+钩子可读取工作流注入的环境变量：`PROJECT_TYPE` / `IS_BACKEND` / `IS_FRONTEND` / `IMAGE_TAGS` / `DEPLOY_URL` / `CLOUDFLARE_PROJECT` 等（详见 `.ci/hooks/README.md`）。返回非 0 会**阻断**该阶段，便于接入质量门禁。
 
 ### 16.5 作业编排与产物复用（避免重复构建）
 
@@ -474,10 +493,10 @@ setup ─┬─ ci              测试/检查（PR 与 push 都跑，质量门�
 | `DOCKERFILE_PATH` | `Dockerfile` 或 `docker/latest/Dockerfile.nginx` | 多镜像时分别配置 |
 | `CLOUDFLARE_PROJECT` | `tuiwen` | Cloudflare Pages 项目名 |
 | `STATIC_BUILD_CMD` / `STATIC_DIST_DIR` | `npm run build` / `dist` | 编译 HTML 的命令与产物目录 |
-| `ASSETS_DOCKERFILE` | `docker-assets/Dockerfile.assets` | 静态资源独立镜像的 Dockerfile 路径 |
+| `ASSETS_DOCKERFILE` | `.ci/docker-assets/Dockerfile.assets` | 静态资源独立镜像的 Dockerfile 路径 |
 | `PYTHON_VERSION` / `NODE_VERSION` | `3.14` / `22` | 语言运行时版本 |
 
-> ⚠️ **版本号不再需要 `PROJECT_VERSION` 变量**：由 git `v*` tag 自动去 `v` 提取（见 §9、§13），避免人工维护不一致（修复 D7）。若有 `hooks/ci.sh` 等自定义脚本，按 `hooks/README.md` 放置即可。
+> ⚠️ **版本号不再需要 `PROJECT_VERSION` 变量**：由 git `v*` tag 自动去 `v` 提取（见 §9、§13），避免人工维护不一致（修复 D7）。若有 `.ci/hooks/ci.sh` 等自定义脚本，按 `.ci/hooks/README.md` 放置即可。
 | `PORT` / `DOMAIN` | `8000` / `tuiwen.example.com` | 运行时专用 |
 
 ---
@@ -566,7 +585,7 @@ setup ─┬─ ci              测试/检查（PR 与 push 都跑，质量门�
 - `CLOUDFLARE_PROJECT` / `STATIC_BUILD_CMD` / `STATIC_DIST_DIR`
 - `PYTHON_VERSION` / `NODE_VERSION` / `PORT` / `DOMAIN`
 - 是否启用 LFS（rhapsody）、是否多镜像变体（vue）
-- `hooks/` 下按需放置自定义脚本（不放置则跳过）
+- `.ci/hooks/` 下按需放置自定义脚本（不放置则跳过）
 
 ```text
 公共规范(模板) + 项目配置(变量) = 完整项目 CI/CD
@@ -634,8 +653,8 @@ A：只改 §17 变量 + 复制模板，详见 §18 Checklist。
 | `.github/workflows/docker-assets.yml` | 本交付 | 📋 静态资源独立镜像（-assets 后缀） | 📋 |
 | `.github/workflows/static.yml` | 本交付 | 📋 Cloudflare Pages 部署 | 📋 |
 | `.github/workflows/release.yml` | 本交付 | 📋 自动 Release | 📋 |
-| `hooks/*.sh` | 本交付 | 📋 用户自定义步骤扩展点 | 📋 |
-| `docker-assets/Dockerfile.assets` | 本交付 | 📋 静态资源 scratch 镜像 | 📋 |
+| `.ci/hooks/*.sh` | 本交付 | 📋 用户自定义步骤扩展点 | 📋 |
+| `.ci/docker-assets/Dockerfile.assets` | 本交付 | 📋 静态资源 scratch 镜像 | 📋 |
 | `project.config.yaml` | 本交付 | 📋 项目专属配置清单 | 📋 |
 | `wrangler.toml` | 无 | Cloudflare 配置 | 未用（action 内联命令） |
 | GitHub Releases / tags | fastapi/vue | ✅ 已存在 | ✅ |
