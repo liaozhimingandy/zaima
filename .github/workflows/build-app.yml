@@ -1,0 +1,179 @@
+name: 构建原生 App 安装包（Android / iOS 离线打包）
+
+# =============================================================================
+# 目标：在 GitHub Actions 里把 uni-app 工程离线打包成可安装的 APK / IPA，
+# 不依赖 DCloud 云打包（避开中国区账号 CLI 登录的已知 bug，也不消耗云打包额度）。
+#
+# 触发方式：
+#   1) 手动：Actions → 本工作流 → Run workflow，选择 android / ios / both
+#   2) 打 tag：推送 v* 标签时自动构建 both
+#
+# 离线 SDK 壳工程来源（详见 docs/APP_PACKAGING.md）：
+#   DCloud 官方现仅通过百度云/和彩云网盘分发离线 SDK（无 CI 可直链地址），
+#   因此本工作流按以下优先级获取壳工程：
+#     1) 仓库内 native/android|ios/（推荐，最稳，需把壳工程提交到仓库）
+#     2) GitHub Release（标签 native-sdk）里的 android-sdk.zip / ios-sdk.zip
+#   Secrets：Android 签名可选（缺省自动生成调试 keystore，仅测试）；iOS 签名必填
+# =============================================================================
+on:
+  # 手动触发：选择要构建的平台
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 选择要构建的平台
+        required: true
+        default: android
+        type: choice
+        options:
+          - android
+          - ios
+          - both
+  # 推送 v* 标签时自动构建两个平台
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+# 同一 ref 只跑最新一次
+concurrency:
+  group: build-app-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+  # GitHub Release 标签：CI 从中下载 android-sdk.zip / ios-sdk.zip（若仓库内 native/ 不存在时）
+  NATIVE_SDK_RELEASE: native-sdk
+  APP_ID: '__UNI__Z4IM0A0Z9X'
+  ANDROID_HOME: ${{ github.workspace }}/android-sdk
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Android：构建 APK
+  # ---------------------------------------------------------------------------
+  build-android:
+    name: 构建 Android APK（离线打包）
+    # tag 推送时两个平台都构建；手动时按输入选择
+    if: ${{ github.event_name == 'push' || inputs.platform == 'android' || inputs.platform == 'both' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # 拉取源码
+      - name: 检出代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # 安装 Node 22（uni-app 构建需要）
+      - name: 配置 Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # 安装依赖并构建 uni-app App 资源（产物 dist/build/app）
+      - name: 安装依赖并构建 uni-app App 资源
+        working-directory: frontend
+        run: |
+          npm ci --registry=https://registry.npmjs.org --no-audit --no-fund
+          npm run build:app
+          echo "uni-app 资源产物目录："
+          ls -la dist/build/app | head
+
+      # 离线 SDK 的 Gradle/AGP 需要 JDK 17
+      - name: 配置 JDK（离线 SDK 的 Gradle/AGP 需要）
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # 安装 Android SDK 命令行工具与平台/构建工具
+      - name: 安装 Android SDK（cmdline-tools + 平台/构建工具）
+        run: |
+          set -euo pipefail
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+          curl -fsSL https://dl.google.com/android/repository/commandline-tools-linux-11076708_latest.zip -o /tmp/cmdtools.zip
+          unzip -q /tmp/cmdtools.zip -d "$ANDROID_HOME/cmdline-tools"
+          mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-34" "platforms;android-33" "build-tools;34.0.0" "build-tools;33.0.2"
+
+      # 调用脚本：准备壳工程 → 注入资源 → Gradle 构建 → 签名
+      - name: 构建并签名 APK
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          APP_ID: ${{ env.APP_ID }}
+          NATIVE_SDK_RELEASE: ${{ env.NATIVE_SDK_RELEASE }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DCLOUD_ANDROID_SDK_URL: ${{ vars.DCLOUD_ANDROID_SDK_URL }}
+        run: bash scripts/build-android.sh
+
+      # 无论成败都尝试上传 APK（构建失败时可能为空，用 warn 不打断）
+      - name: 上传 APK
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-apk
+          path: native/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: warn
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # iOS：构建 IPA（需签名证书，macOS runner）
+  # ---------------------------------------------------------------------------
+  build-ios:
+    name: 构建 iOS IPA（离线打包）
+    if: ${{ github.event_name == 'push' || inputs.platform == 'ios' || inputs.platform == 'both' }}
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      # 拉取源码
+      - name: 检出代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # 安装 Node 22
+      - name: 配置 Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # 安装依赖并构建 uni-app App 资源
+      - name: 安装依赖并构建 uni-app App 资源
+        working-directory: frontend
+        run: |
+          npm ci --registry=https://registry.npmjs.org --no-audit --no-fund
+          npm run build:app
+
+      # 调用脚本：准备壳工程 → 注入资源 → xcodebuild 构建 → 导出 IPA
+      - name: 构建并签名 IPA
+        env:
+          IOS_P12_BASE64: ${{ secrets.IOS_P12_BASE64 }}
+          IOS_MOBILEPROVISION_BASE64: ${{ secrets.IOS_MOBILEPROVISION_BASE64 }}
+          IOS_CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IOS_EXPORT_METHOD: ${{ vars.IOS_EXPORT_METHOD || 'development' }}
+          APP_ID: ${{ env.APP_ID }}
+          NATIVE_SDK_RELEASE: ${{ env.NATIVE_SDK_RELEASE }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DCLOUD_IOS_SDK_URL: ${{ vars.DCLOUD_IOS_SDK_URL }}
+        run: bash scripts/build-ios.sh
+
+      # 无论成败都尝试上传 IPA
+      - name: 上传 IPA
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ios-ipa
+          path: native/ios/build/*.ipa
+          if-no-files-found: warn
+          retention-days: 30

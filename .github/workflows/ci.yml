@@ -1,0 +1,389 @@
+name: CI
+
+# =============================================================================
+# PR 检查工作流（只做验证，不推送任何镜像）。
+#   - backend-tests：后端测试（SQLite + Postgres 双矩阵）+ Alembic 迁移往返
+#   - frontend-checks：类型检查 / lint / 测试 / H5 构建校验
+#   - docker-build：后端 API 镜像能否构建、非 root、且不含任何前端文件、能启动
+#   - app-image：一体化镜像（API + H5）能否构建并真正访问到首页
+#   - report：汇总结果，任一失败则整体失败
+# =============================================================================
+on:
+  # PR 打开、更新、重开、转正时触发
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  # 支持手动触发
+  workflow_dispatch:
+
+# 最小权限：只读仓库内容，不使用任何 secrets
+permissions:
+  contents: read
+
+# 同一 PR 只跑最新一次，取消旧任务
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.13'
+  NODE_VERSION: '22'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) 后端测试：SQLite 与 Postgres 两种数据库各跑一遍
+  # ---------------------------------------------------------------------------
+  backend-tests:
+    name: 后端测试 / ${{ matrix.database }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres]
+    services:
+      # Postgres 服务容器（sqlite 矩阵不使用，但声明无害）
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: zaima
+          POSTGRES_PASSWORD: zaima
+          POSTGRES_DB: zaima_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zaima -d zaima_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # sqlite 矩阵留空，conftest 会自动退化为本地 SQLite
+      TEST_DATABASE_URL: ${{ matrix.database == 'postgres' && 'postgresql+psycopg://zaima:zaima@localhost:5432/zaima_test' || '' }}
+      DATABASE_URL: postgresql+psycopg://zaima:zaima@localhost:5432/zaima_test
+    steps:
+      # 拉取源码（不保留凭据，避免被后续步骤滥用）
+      - name: 检出代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # 安装 Python 3.13 并启用 pip 缓存
+      - name: 配置 Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      # 安装后端测试依赖
+      - name: 安装依赖
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # 仅在 postgres 矩阵执行：验证迁移可前滚、回滚、再前滚
+      - name: Alembic 迁移往返（postgres）
+        if: matrix.database == 'postgres'
+        working-directory: backend
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+          alembic current
+
+      # 运行测试并输出 JUnit 报告
+      - name: 运行测试
+        working-directory: backend
+        run: pytest -q --junitxml=pytest-${{ matrix.database }}.xml
+
+      # 无论成败都上传测试报告，便于排查
+      - name: 上传测试报告
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pytest-report-${{ matrix.database }}-${{ github.run_attempt }}
+          path: backend/pytest-${{ matrix.database }}.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 2) 前端检查：类型 / lint / 测试 / 构建
+  # ---------------------------------------------------------------------------
+  frontend-checks:
+    name: 前端检查
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      # 拉取源码
+      - name: 检出代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # 安装 Node 22 并启用 npm 缓存
+      - name: 配置 Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # 严格按 lockfile 安装依赖
+      - name: 安装依赖（严格按锁文件）
+        run: npm ci --registry=https://registry.npmjs.org --no-audit --no-fund
+
+      # TypeScript 类型检查
+      - name: TypeScript 类型检查
+        run: npm run type-check
+
+      # ESLint 能力探测：配置了 lint 脚本才执行，否则跳过并提示
+      - name: ESLint（未配置则跳过）
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.lint ? 0 : 1)"; then
+            npm run lint
+          else
+            echo "::notice title=Lint 未配置::package.json 中没有 lint 脚本，本步骤跳过"
+          fi
+
+      # 单元测试能力探测：配置了 test 脚本才执行
+      - name: 前端测试（未配置则跳过）
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then
+            npm run test
+          else
+            echo "::notice title=前端测试未配置::package.json 中没有 test 脚本，本步骤跳过"
+          fi
+
+      # 验证 H5 可编译
+      - name: H5 构建（验证可编译）
+        run: npm run build:h5
+
+      # 校验产物确实生成（防止静默失败）
+      - name: 校验构建产物
+        run: |
+          set -euo pipefail
+          test -f dist/build/h5/index.html
+          echo "H5 产物文件数: $(find dist/build/h5 -type f | wc -l)"
+
+  # ---------------------------------------------------------------------------
+  # 3) 后端 API 镜像：构建 + 非 root + 不含前端 + 启动冒烟
+  # ---------------------------------------------------------------------------
+  docker-build:
+    name: Dockerfile 构建与启动冒烟
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # 拉取源码
+      - name: 检出代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # 启用 Buildx（利用 GHA 缓存）
+      - name: 配置 Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # 只构建不推送（PR 流程绝不登录/推送），并加载到本地用于后续检查
+      - name: 构建镜像（不推送）
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: false
+          load: true
+          tags: zaima-api:ci
+          build-args: |
+            APP_VERSION=ci
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha,scope=zaima-api
+          cache-to: type=gha,scope=zaima-api,mode=max
+          # load:true 需要关闭 attestation，否则 docker exporter 报 manifest list 错误
+          provenance: false
+          sbom: false
+
+      # 安全基线：容器必须以非 root 运行
+      - name: 校验以非 root 运行
+        run: |
+          set -euo pipefail
+          uid=$(docker run --rm --entrypoint id zaima-api:ci -u)
+          echo "容器内 uid: $uid"
+          test "$uid" != "0"
+
+      # 纯 API 镜像不允许包含任何前端文件（H5 只属于一体化调试镜像）
+      - name: 校验 API 镜像不含前端
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh zaima-api:ci -c '
+            test ! -d /app/static || { echo "::error::API 镜像不应包含 /app/static"; exit 1; }
+            n=$(find / -name "index.html" -not -path "*/site-packages/*" 2>/dev/null | wc -l)
+            test "$n" -eq 0 || { echo "::error::API 镜像内发现 index.html"; exit 1; }
+          '
+          echo "API 镜像不含前端文件"
+
+      # 启动容器并验证健康检查与根路径 JSON
+      - name: 容器启动冒烟（SQLite）
+        run: |
+          set -euo pipefail
+          docker run -d --name zaima-smoke -p 18000:8000 \
+            -e APP_ENV=dev \
+            -e AUTO_CREATE_TABLES=true \
+            -e SCHEDULER_ENABLED=false \
+            -e DATABASE_URL=sqlite+pysqlite:////tmp/zaima.db \
+            -e EMAIL_ADAPTER=mock \
+            zaima-api:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18000/api/health > /tmp/health.json; then
+              cat /tmp/health.json
+              break
+            fi
+            sleep 1
+          done
+          test -s /tmp/health.json
+          # 根路径必须是 JSON（说明没有托管前端）
+          curl -fsS http://127.0.0.1:18000/ -o /tmp/root.json
+          grep -q '"name":"在吗 API"' /tmp/root.json \
+            || { echo "::error::API 镜像的 / 未返回 JSON"; cat /tmp/root.json; exit 1; }
+
+      # 记录镜像体积到 Job Summary
+      - name: 记录镜像体积
+        run: |
+          size=$(docker image inspect zaima-api:ci --format '{{.Size}}')
+          human=$(docker images zaima-api:ci --format '{{.Size}}')
+          echo "API 镜像：${human}（${size} bytes）"
+          {
+            echo ""
+            echo "| 镜像 | 体积 |"
+            echo "| --- | --- |"
+            echo "| API（无前端） | ${human} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 失败时也输出容器日志，方便定位
+      - name: 收集容器日志
+        if: always()
+        run: docker logs zaima-smoke 2>&1 | tail -50 || true
+
+  # ---------------------------------------------------------------------------
+  # 4) 一体化镜像（API + H5）：构建并验证首页与接口
+  # ---------------------------------------------------------------------------
+  app-image:
+    name: 一体化镜像（API + H5）
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # 拉取源码
+      - name: 检出代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # 启用 Buildx
+      - name: 配置 Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # 构建一体化镜像（不推送），容器启动即可访问 H5
+      - name: 构建一体化镜像（不推送）
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Dockerfile.app
+          push: false
+          load: true
+          tags: zaima-app:ci
+          build-args: |
+            APP_VERSION=ci
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha,scope=zaima-app
+          cache-to: type=gha,scope=zaima-app,mode=max
+          provenance: false
+          sbom: false
+
+      # 启动容器，验证首页、静态资源与越权路径 404
+      - name: 启动冒烟：首页 + 接口
+        run: |
+          set -euo pipefail
+          docker run -d --name zaima-app-smoke -p 18080:8000 zaima-app:ci
+          ok=0
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:18080/api/health > /tmp/health.json 2>/dev/null; then ok=1; break; fi
+            sleep 2
+          done
+          if [ "${ok}" != "1" ]; then
+            echo "::error::一体化镜像启动失败"
+            docker logs zaima-app-smoke
+            exit 1
+          fi
+          # 调试镜像必须真的带上前端产物
+          docker run --rm --entrypoint sh zaima-app:ci -c 'test -f /app/static/index.html' \
+            || { echo "::error::调试镜像缺少 /app/static/index.html"; exit 1; }
+          curl -fsS http://127.0.0.1:18080/ -o /tmp/index.html
+          grep -qi '<div id="app"' /tmp/index.html || { echo "::error::首页未返回 H5 入口"; exit 1; }
+          # 静态资源必须可访问，否则页面白屏
+          asset=$(grep -oE '(\./)?assets/[A-Za-z0-9._-]+\.(js|css)' /tmp/index.html | head -1)
+          echo "探测静态资源: ${asset}"
+          curl -fsS "http://127.0.0.1:18080/${asset#./}" -o /dev/null
+          # 托管范围必须收窄：只允许 / 与 /assets/*，其它路径一律 404
+          for path in /index.html /pages/index/index /app/main.py; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18080${path}")
+            echo "GET ${path} -> ${code}"
+            test "${code}" = "404" || { echo "::error::${path} 应返回 404，实际 ${code}"; exit 1; }
+          done
+          cat /tmp/health.json
+          echo "一体化镜像冒烟通过：/ 与 /api/health 可用，越权路径已拦截"
+
+      # 失败时输出容器日志
+      - name: 收集容器日志
+        if: always()
+        run: docker logs zaima-app-smoke 2>&1 | tail -50 || true
+
+      # 记录一体化镜像体积
+      - name: 记录镜像体积
+        run: |
+          human=$(docker images zaima-app:ci --format '{{.Size}}')
+          echo "调试镜像（API + H5）：${human}"
+          {
+            echo "| 调试镜像（API + H5） | ${human} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 5) CI 汇总：任一检查失败则整体失败
+  # ---------------------------------------------------------------------------
+  report:
+    name: CI 汇总
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend-checks, docker-build, app-image]
+    if: always()
+    steps:
+      # 写入汇总表
+      - name: 写入构建摘要
+        run: |
+          set -euo pipefail
+          {
+            echo "## 在吗 CI"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 触发事件 | \`${{ github.event_name }}\` |"
+            echo "| 分支 / 引用 | \`${{ github.ref_name }}\` |"
+            echo "| 提交 SHA | \`${{ github.sha }}\` |"
+            echo "| 后端测试 (sqlite) | ${{ needs.backend-tests.result }} |"
+            echo "| 前端检查 | ${{ needs.frontend-checks.result }} |"
+            echo "| Dockerfile 构建（API 镜像） | ${{ needs.docker-build.result }} |"
+            echo "| 一体化镜像（API + H5） | ${{ needs.app-image.result }} |"
+            echo "| 镜像推送 | 未执行（PR 流程不发布） |"
+            echo ""
+            echo "> 通过条件：所有检查均为 success。任一失败时本工作流为失败，不进入发布流程。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 若存在失败/取消，则让本 job 失败
+      - name: 检查整体结果
+        run: |
+          set -euo pipefail
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "::error::存在失败的检查项"
+            exit 1
+          fi
+          echo "全部检查通过"

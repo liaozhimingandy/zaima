@@ -1,0 +1,30 @@
+# Docker 构建上下文裁剪：只保留构建所需文件，加快上传与构建。
+# 注意：不要忽略 h5-dist/（预构建的 H5 产物，供静态镜像 COPY 使用）。
+
+# 版本控制 / CI / 编辑器
+.git
+.github
+.gitignore
+.workbuddy
+.vscode
+.idea
+
+# 依赖与缓存（镜像内会重新安装）
+**/node_modules
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+
+# 前端旧的构建产物（镜像只使用 h5-dist/，不需要旧的 dist）
+frontend/dist
+frontend/unpackage
+frontend/.hbuilderx
+
+# 原生打包产物（体积大，与镜像无关）
+native
+
+# 文档
+docs
+**/*.md
+!README.md
