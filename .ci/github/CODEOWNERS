@@ -1,5 +1,0 @@
-# CODEOWNERS -- 仅多维护者项目启用；单维护者可删除本文件
-# 语法: <路径> <GitHub 账号>
-* @liaozhimingandy
-/.github/ @liaozhimingandy
-/docs/ @liaozhimingandy

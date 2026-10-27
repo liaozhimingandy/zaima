@@ -112,6 +112,10 @@ jobs:
           name: h5-dist
           path: h5-dist
 
+      # 校验产物确实存在：缺失时给出清晰报错，而不是 Docker 的 cache key 报错
+      - name: 校验 H5 产物存在
+        run: test -f h5-dist/index.html || { echo "::error::h5-dist/index.html 缺失"; ls -la h5-dist || true; exit 1; }
+
       # 启用 Buildx（支持多平台/缓存等）
       - name: 配置 Buildx
         uses: docker/setup-buildx-action@v3
@@ -171,6 +175,10 @@ jobs:
         with:
           name: h5-dist
           path: h5-dist
+
+      # 校验产物确实存在：缺失时给出清晰报错
+      - name: 校验 H5 产物存在
+        run: test -f h5-dist/index.html || { echo "::error::h5-dist/index.html 缺失"; ls -la h5-dist || true; exit 1; }
 
       # 启用 Buildx
       - name: 配置 Buildx
