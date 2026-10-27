@@ -1,0 +1,4 @@
+# ci-cd-template installed files (2026-10-27T13:25:07Z)
+.ci/scripts/read-config.sh
+.ci/uninstall.ps1
+.ci/uninstall.sh
