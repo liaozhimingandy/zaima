@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
-from app import __version__
+from app import __build__, __version__
 from app.api.routes import account as account_routes
 from app.api.routes import checkin as checkin_routes
 from app.api.routes import dev as dev_routes
@@ -29,7 +29,7 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    logger.info("服务启动 env=%s version=%s", settings.APP_ENV, __version__)
+    logger.info("服务启动 env=%s version=%s build=%s", settings.APP_ENV, __version__, __build__)
     try:
         init_db()
     except Exception as exc:  # noqa: BLE001 - 数据库不可用时仍提供健康检查
@@ -233,6 +233,7 @@ if not _has_static:
         return {
             "name": "在吗 API",
             "version": __version__,
+            "build": __build__,
             "docs": "/docs" if settings.DOCS_ENABLED else None,
             "slogan": "每天点一下，让有人知道你还在。",
             "logo": settings.LOGO_URL,

@@ -51,9 +51,20 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      # 计算版本号与构建号（构建号 = 提交短哈希），注入前端产物
+      - name: Compute version and build
+        id: ver
+        working-directory: frontend
+        run: |
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          echo "build=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
       # 构建 H5 静态站点（产物：frontend/dist/build/h5）
       - name: Build H5
         working-directory: frontend
+        env:
+          VITE_APP_VERSION: ${{ steps.ver.outputs.version }}
+          VITE_APP_BUILD: ${{ steps.ver.outputs.build }}
         run: npm run build:h5
 
       # 用官方 Action 把产物上传到 Cloudflare Pages 项目 zaima-h5

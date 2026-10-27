@@ -2,9 +2,12 @@ name: Build H5 Images
 
 # =============================================================================
 # 只负责「前端 H5」的两个镜像，不构建后端（后端镜像在 release.yml 中构建，
-# 避免同一 commit 被多个工作流重复构建）：
-#   1) <repo>-assets ：scratch 空根镜像，只含 H5 构建产物，体积极小，便于分发/提取；
-#   2) <repo>        ：nginx:alpine + H5 产物，可直接 docker run 起来做测试。
+# 避免同一 commit 被多个工作流重复构建）。
+#
+# 统一到单一镜像仓库（默认 <owner>/zaima），用标签前缀区分用途，便于集中管理：
+#   1) zaima:h5-assets-* ：scratch 空根镜像，只含 H5 构建产物，体积极小，便于分发/提取；
+#   2) zaima:h5-*        ：nginx:alpine + H5 产物，可直接 docker run 起来做测试。
+#   （标签命名：h5-latest / h5-<tag> / h5-sha-<sha>，静态镜像同理加 assets）
 #
 # 复用策略（核心）：H5 只在 build-h5 作业构建 **一次**，上传为 artifact；
 #   两个镜像作业下载同一份产物到 h5-dist/ 后再构建，**不在 Docker 内重复 npm build**。
@@ -35,8 +38,8 @@ concurrency:
 env:
   NODE_VERSION: '22'
   REGISTRY: docker.io
-  # 镜像仓库：优先仓库变量 DOCKER_H5_REPOSITORY，否则回退 <owner>/zaima-h5
-  IMAGE: ${{ vars.DOCKER_H5_REPOSITORY || format('{0}/zaima-h5', github.repository_owner) }}
+  # 统一镜像仓库：默认 <owner>/zaima（与 release.yml 一致），用标签前缀区分用途
+  IMAGE_REPO: ${{ vars.DOCKER_REPOSITORY || format('{0}/zaima', github.repository_owner) }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -64,9 +67,20 @@ jobs:
         working-directory: frontend
         run: npm ci --no-audit --no-fund
 
+      # 计算版本号与构建号（构建号 = 提交短哈希），注入前端产物
+      - name: 计算版本与构建号
+        id: ver
+        working-directory: frontend
+        run: |
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          echo "build=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
       # 构建 H5 静态站点，产物在 frontend/dist/build/h5
       - name: 构建 H5
         working-directory: frontend
+        env:
+          VITE_APP_VERSION: ${{ steps.ver.outputs.version }}
+          VITE_APP_BUILD: ${{ steps.ver.outputs.build }}
         run: npm run build:h5
 
       # 上传产物，供后续镜像作业复用（避免二次构建）
@@ -110,16 +124,21 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
 
-      # 生成镜像标签：latest(默认分支) / 版本(tag) / sha-<sha>
+      # 计算短提交号（用于 sha 标签）
+      - name: 计算短提交号
+        id: vars
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # 生成镜像标签：zaima:h5-assets-latest / h5-assets-<tag> / h5-assets-sha-<sha>
       - name: 生成镜像标签
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE }}-assets
+          images: ${{ env.IMAGE_REPO }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=tag
-            type=sha,prefix=sha-
+            type=raw,value=h5-assets-latest,enable={{is_default_branch}}
+            type=raw,value=h5-assets-${{ github.ref_name }},enable=${{ startsWith(github.ref, 'refs/tags/') }}
+            type=raw,value=h5-assets-sha-${{ steps.vars.outputs.short }}
 
       # 构建并推送 scratch 镜像，标签同上
       - name: 构建并推送（scratch，仅产物）
@@ -165,16 +184,21 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
 
-      # 生成标签：latest / 版本 / sha
+      # 计算短提交号（用于 sha 标签）
+      - name: 计算短提交号
+        id: vars
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # 生成标签：zaima:h5-latest / h5-<tag> / h5-sha-<sha>
       - name: 生成镜像标签
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE }}
+          images: ${{ env.IMAGE_REPO }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=tag
-            type=sha,prefix=sha-
+            type=raw,value=h5-latest,enable={{is_default_branch}}
+            type=raw,value=h5-${{ github.ref_name }},enable=${{ startsWith(github.ref, 'refs/tags/') }}
+            type=raw,value=h5-sha-${{ steps.vars.outputs.short }}
 
       # 构建并推送 nginx 镜像
       - name: 构建并推送（nginx:alpine）
@@ -212,7 +236,7 @@ jobs:
             echo ""
             echo "| 镜像 | 标签 |"
             echo "| --- | --- |"
-            echo "| ${{ env.IMAGE }} | \`$(echo "${{ steps.meta.outputs.tags }}" | tr '\n' ' ')\` |"
+            echo "| ${{ env.IMAGE_REPO }} | \`$(echo "${{ steps.meta.outputs.tags }}" | tr '\n' ' ')\` |"
             echo ""
-            echo "本地验证：\`docker run --rm -p 8080:80 <镜像>:latest\` 后访问 http://localhost:8080/"
+            echo "本地验证：\`docker run --rm -p 8080:80 ${{ env.IMAGE_REPO }}:h5-latest\` 后访问 http://localhost:8080/"
           } >> "$GITHUB_STEP_SUMMARY"

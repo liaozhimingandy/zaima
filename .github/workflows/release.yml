@@ -64,8 +64,8 @@ jobs:
           INPUT_PUBLISH: ${{ inputs.publish }}
           INPUT_FORCE: ${{ inputs.force_tag }}
           DOCKER_REPOSITORY: ${{ vars.DOCKER_REPOSITORY }}
-          DOCKER_APP_REPOSITORY: ${{ vars.DOCKER_APP_REPOSITORY }}
           ENABLE_FLOATING_TAGS: ${{ vars.ENABLE_FLOATING_TAGS }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
 
@@ -130,14 +130,14 @@ jobs:
             exit 1
           fi
 
+          # 统一到单一镜像仓库：优先仓库变量 DOCKER_REPOSITORY，否则默认 <owner>/zaima。
+          # 所有镜像共用该仓库，用标签前缀区分用途（<ver> / latest / sha-<sha>；一体化 app-*）。
           if [ -n "${DOCKER_REPOSITORY}" ]; then
             IMAGE="${DOCKER_REPOSITORY}"
-            HAS_CFG="true"
           else
-            # 未配置仓库变量时仅用于本地构建，不推送
-            IMAGE="zaima-api"
-            HAS_CFG="false"
+            IMAGE="${GITHUB_REPOSITORY_OWNER}/zaima"
           fi
+          HAS_CFG="true"
 
           # 从版本号提取主/次版本（功能发布 vA.B 与补丁发布 vA.B.C 通用）
           MAJOR=$(echo "${VERSION}" | cut -d. -f1)
@@ -162,28 +162,19 @@ jobs:
             TAGS=$(printf '%s\n' "${TAGS}" | awk 'NF && !seen[$0]++')
           fi
 
-          # 测试镜像（API + H5，含 static）：
-          #   推荐配置独立的 DOCKER_APP_REPOSITORY（例如 liaozhiming/zaima-test），标签与版本一一对应；
-          #   未配置时退回「同一仓库 + -app 后缀」，避免必须再建一个 Docker Hub 仓库。
-          APP_REPO="${DOCKER_APP_REPOSITORY:-}"
-          if [ -n "${APP_REPO}" ]; then
-            APP_IMAGE="${APP_REPO}"
-            APP_SUFFIX=""
-          else
-            APP_IMAGE="${IMAGE}"
-            APP_SUFFIX="-app"
-          fi
+          # 一体化调试镜像（API + H5）与后端同一仓库，用 app- 前缀区分，避免多仓库管理。
+          APP_IMAGE="${IMAGE}"
 
           APP_TAGS=""
           if [ "${HAS_CFG}" = "true" ]; then
-            APP_TAGS="${APP_IMAGE}:${VERSION}${APP_SUFFIX}"
-            APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:sha-${FULL_SHA}${APP_SUFFIX}"
+            APP_TAGS="${APP_IMAGE}:app-${VERSION}"
+            APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:app-sha-${FULL_SHA}"
             if [ "${IS_RELEASE}" = "true" ] && [ "${IS_PRERELEASE}" != "true" ]; then
-              APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:latest${APP_SUFFIX}"
+              APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:app-latest"
             fi
             if [ "${FLOATING}" = "true" ] && [ "${IS_PRERELEASE}" != "true" ]; then
-              APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:${MAJOR}.${MINOR}${APP_SUFFIX}"
-              APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:${MAJOR}${APP_SUFFIX}"
+              APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:app-${MAJOR}.${MINOR}"
+              APP_TAGS="${APP_TAGS}"$'\n'"${APP_IMAGE}:app-${MAJOR}"
             fi
             APP_TAGS=$(printf '%s\n' "${APP_TAGS}" | awk 'NF && !seen[$0]++')
           fi
@@ -368,6 +359,8 @@ jobs:
         working-directory: frontend
     env:
       VITE_APP_VERSION: ${{ needs.meta.outputs.version }}
+      # 构建号 = 提交短哈希，注入前端产物，便于线上排查
+      VITE_APP_BUILD: ${{ needs.meta.outputs.short_sha }}
     steps:
       - name: 检出代码
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -488,7 +481,7 @@ jobs:
             missing=1
           fi
           if [ "${HAS_DOCKER_CONFIG}" != "true" ]; then
-            echo "::error title=缺少 DOCKER_REPOSITORY::请在 Repository variables 配置 DOCKER_REPOSITORY，例如 liaozhiming/zaima-api"
+            echo "::error title=缺少 DOCKER_REPOSITORY::如需自定义镜像仓库，请在 Repository variables 配置 DOCKER_REPOSITORY，例如 liaozhiming/zaima（未配置时默认 <owner>/zaima）"
             missing=1
           fi
           if [ "${missing}" -ne 0 ]; then
@@ -541,15 +534,13 @@ jobs:
           TAGS: ${{ needs.meta.outputs.tags }}
           APP_TAGS: ${{ needs.meta.outputs.app_tags }}
           FULL_SHA: ${{ github.sha }}
-          HAS_APP_REPO: ${{ vars.DOCKER_APP_REPOSITORY != '' }}
         run: |
           set -euo pipefail
           # 探测需要只读登录（imagetools inspect 需要凭据）
           echo "${DOCKER_TOKEN}" | docker login "${REGISTRY}" -u "${DOCKER_USERNAME}" --password-stdin >/dev/null
 
           api_src="${IMAGE}:sha-${FULL_SHA}"
-          if [ "${HAS_APP_REPO}" = "true" ]; then app_suffix=""; else app_suffix="-app"; fi
-          app_src="${APP_IMAGE}:sha-${FULL_SHA}${app_suffix}"
+          app_src="${APP_IMAGE}:app-sha-${FULL_SHA}"
 
           # 把 $1 指向的已存在镜像重打成 $2 里列出的所有标签（排除源自身）
           retag() {
@@ -586,7 +577,7 @@ jobs:
             echo "| 镜像 | 源标签 | 命中（已构建） |"
             echo "| --- | --- | --- |"
             echo "| API | \`sha-${FULL_SHA}\` | ${api_reused} |"
-            echo "| 一体化 | \`sha-${FULL_SHA}${app_suffix}\` | ${app_reused} |"
+            echo "| 一体化 | \`app-sha-${FULL_SHA}\` | ${app_reused} |"
             echo ""
             echo "> 命中则跳过构建，仅重打版本标签（更快、更省资源）。"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -603,6 +594,7 @@ jobs:
           tags: ${{ needs.meta.outputs.tags != '' && needs.meta.outputs.tags || format('{0}:{1}', needs.meta.outputs.image, needs.meta.outputs.version) }}
           build-args: |
             APP_VERSION=${{ needs.meta.outputs.version }}
+            APP_BUILD=${{ needs.meta.outputs.short_sha }}
             VCS_REF=${{ github.sha }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
@@ -622,9 +614,10 @@ jobs:
           context: .
           file: ./Dockerfile.app
           push: ${{ needs.meta.outputs.should_push == 'true' }}
-          tags: ${{ needs.meta.outputs.app_tags != '' && needs.meta.outputs.app_tags || format('{0}:{1}-app', needs.meta.outputs.app_image, needs.meta.outputs.version) }}
+          tags: ${{ needs.meta.outputs.app_tags != '' && needs.meta.outputs.app_tags || format('{0}:app-{1}', needs.meta.outputs.app_image, needs.meta.outputs.version) }}
           build-args: |
             APP_VERSION=${{ needs.meta.outputs.version }}
+            APP_BUILD=${{ needs.meta.outputs.short_sha }}
             VCS_REF=${{ github.sha }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}

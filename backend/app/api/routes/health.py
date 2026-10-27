@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app import __version__
+from app import __build__, __version__
 from app.core.config import settings
 from app.core.db import check_db
 from app.core.response import ok
@@ -20,6 +20,7 @@ def health() -> dict:
         {
             "status": "ok" if db_ok else "degraded",
             "version": __version__,
+            "build": __build__,
             "env": settings.APP_ENV,
             "database": {"ok": db_ok, "error": None if db_ok else "unavailable"},
             "emailAdapter": settings.EMAIL_ADAPTER,

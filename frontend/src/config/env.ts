@@ -12,6 +12,12 @@ export const API_PREFIX = '/api'
 /** 由构建流水线通过 VITE_APP_VERSION 注入，未注入时回退到包版本 */
 export const APP_VERSION = (import.meta.env.VITE_APP_VERSION || '1.0.0').trim()
 
+/** 构建号：VITE_APP_BUILD（CI 注入提交短哈希），用于排查线上是哪次构建 */
+export const APP_BUILD = (import.meta.env.VITE_APP_BUILD || '').trim().slice(0, 7)
+
+/** 展示用版本串：如 "1.0.0 (build abcd123)"，无构建号时退化为纯版本 */
+export const APP_VERSION_LABEL = APP_BUILD ? `${APP_VERSION} (build ${APP_BUILD})` : APP_VERSION
+
 export const REQUEST_TIMEOUT = 15000
 
 /** 首页状态自动刷新间隔（毫秒），用于剩余时间倒计时与阶段同步 */

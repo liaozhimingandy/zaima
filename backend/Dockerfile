@@ -41,6 +41,8 @@ FROM ${PYTHON_IMAGE} AS runtime
 
 ARG APP_VERSION=dev
 ARG VCS_REF=unknown
+# 构建号（CI 传提交短哈希），运行期由应用读取用于排查
+ARG APP_BUILD=dev
 
 LABEL org.opencontainers.image.title="zaima-api" \
       org.opencontainers.image.description="Zaima API - daily safety check-in service (no frontend)" \
@@ -58,7 +60,9 @@ ENV PYTHONUNBUFFERED=1 \
     TZ=UTC \
     APP_ENV=prod \
     AUTO_CREATE_TABLES=false \
-    RUN_MIGRATIONS=false
+    RUN_MIGRATIONS=false \
+    APP_VERSION="${APP_VERSION}" \
+    APP_BUILD="${APP_BUILD}"
 
 RUN addgroup -g 10001 -S app \
     && adduser -u 10001 -S -G app -h /app -s /sbin/nologin app

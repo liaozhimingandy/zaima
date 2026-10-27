@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { fetchMe, initAccount } from '@/api/account'
 import { ApiError } from '@/api/http'
-import { APP_VERSION } from '@/config/env'
+import { APP_VERSION_LABEL } from '@/config/env'
 import type { AccountInfo, CheckinSetting } from '@/api/types'
 import { deviceTimezone } from '@/utils/datetime'
 import { randomId } from '@/utils/random'
@@ -44,7 +44,7 @@ export const useAccountStore = defineStore('account', () => {
         const result = await initAccount({
           initKey,
           platform: platformName(),
-          appVersion: APP_VERSION,
+          appVersion: APP_VERSION_LABEL,
           timezone: deviceTimezone()
         })
         const next: Session = {

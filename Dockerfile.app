@@ -39,6 +39,8 @@ RUN set -eux; \
 FROM python:3.13-alpine AS runtime
 ARG APP_VERSION=dev
 ARG VCS_REF=unknown
+# 构建号（CI 传提交短哈希）
+ARG APP_BUILD=dev
 
 LABEL org.opencontainers.image.title="zaima-app" \
       org.opencontainers.image.description="Zaima all-in-one debug image (API + H5)" \
@@ -57,7 +59,9 @@ ENV PYTHONUNBUFFERED=1 \
     SCHEDULER_ENABLED=false \
     EMAIL_ADAPTER=mock \
     DATABASE_URL=sqlite+pysqlite:////data/zaima.db \
-    STATIC_DIR=/app/static
+    STATIC_DIR=/app/static \
+    APP_VERSION="${APP_VERSION}" \
+    APP_BUILD="${APP_BUILD}"
 
 # 非 root 运行，并准备可写的数据目录（SQLite / 模拟邮箱）
 RUN addgroup -g 10001 -S app \

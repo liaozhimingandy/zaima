@@ -151,7 +151,7 @@
     <view class="footer">
       <ZmLogo class="footer__logo" :size="96" />
       <text class="footer__slogan">每天点一下，让有人知道你还在。</text>
-      <text class="footer__version">在吗 v{{ version }}</text>
+      <text class="footer__version">在吗 v{{ versionLabel }}</text>
     </view>
 
     <AppTabBar current="settings" />
@@ -167,14 +167,14 @@ import ZmLogo from '@/components/ZmLogo.vue'
 import { updateSettings, fetchSettings } from '@/api/checkin'
 import { humanizeError } from '@/api/http'
 import type { CheckinSetting } from '@/api/types'
-import { APP_VERSION } from '@/config/env'
+import { APP_VERSION_LABEL } from '@/config/env'
 import { useAccountStore } from '@/stores/account'
 import { useCheckinStore } from '@/stores/checkin'
 import { useGuardianStore } from '@/stores/guardians'
 import { formatDateTime, parseISO } from '@/utils/datetime'
 import { getCapability, requestPermission, type NotifyCapability } from '@/utils/notify'
 
-const version = APP_VERSION
+const versionLabel = APP_VERSION_LABEL
 const supportEmail = 'support@alsoapp.com'
 
 const accountStore = useAccountStore()
@@ -292,7 +292,7 @@ async function askPermission(): Promise<void> {
 
 function copyDiagnostics(): void {
   const lines = [
-    `版本: ${version}`,
+    `版本: ${versionLabel}`,
     `平台: ${capability.value.platformLabel}`,
     `账户ID: ${accountStore.account?.accountId ?? '-'}`,
     `时区: ${timezoneText.value}`,
