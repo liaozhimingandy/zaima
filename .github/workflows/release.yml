@@ -12,6 +12,16 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+    # 只在这些路径变化时跑（避免仅改 CI/文档也触发整套发布）。
+    # 注意：GitHub 对 tag 推送不评估 paths，因此 v* 发布不受影响。
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'Dockerfile'
+      - 'Dockerfile.app'
+      - 'docker-compose.yml'
+      - '.dockerignore'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
     inputs:
       publish:
