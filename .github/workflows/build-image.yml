@@ -1,8 +1,17 @@
 name: Build and Push H5 Image
 
-# 把 H5 静态产物构建成镜像并推送到 GitHub Container Registry (GHCR)
+# 把 H5 静态产物构建成镜像并推送到 Docker 仓库 (默认 GHCR，GitHub 自带、零额外账号)。
 # 镜像名：ghcr.io/<owner>/zaima-h5
+#
+# 触发：push 到 main（打 latest 标签）或打 v* tag（打版本标签），也可手动触发。
+# 想改用 Docker Hub？见下方注释。
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - 'Dockerfile'
+      - '.github/workflows/build-image.yml'
   push:
     tags: ['v*']
   workflow_dispatch:
@@ -27,6 +36,11 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+        # 改用 Docker Hub 时，替换为：
+        #   registry: docker.io
+        #   username: ${{ secrets.DOCKERHUB_USERNAME }}
+        #   password: ${{ secrets.DOCKERHUB_TOKEN }}
+        # 并把下面 images 改成 docker.io/<你的用户名>/zaima-h5
 
       - name: Extract image metadata
         id: meta
@@ -34,6 +48,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/zaima-h5
           tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=tag
             type=sha,prefix=sha-
 

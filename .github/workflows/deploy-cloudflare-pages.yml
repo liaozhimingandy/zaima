@@ -1,0 +1,59 @@
+name: Deploy H5 to Cloudflare Pages
+
+# 用 GitHub Actions 构建 H5，再把静态产物部署到 Cloudflare Pages。
+#
+# 为什么这样最省事（已踩过的坑都避开）：
+#   1. Cloudflare 不参与构建 —— 不会再出现 "Vite >= 6 才能自动配置" 的报错
+#      （那是因为连 Git 后 Cloudflare 自己构建，强套 Vite 集成；这里由 GitHub 用 Vite 5.2.8 构建）。
+#   2. 不使用 Cloudflare 的 "部署命令" 字段 —— 不会再出现 Authentication error [code: 10000]
+#      （那个字段会让你填 wrangler，且用到的 token 没有 Pages 写权限）。
+#   3. 改用官方 cloudflare/pages-action，通过仓库 Secrets 提供的 API Token 部署，干净可控。
+#
+# 前置（一次性，见仓库说明/对话）：
+#   - Cloudflare Pages 项目 zaima-h5 用 "Direct Upload" 方式创建（不要 Connect to Git）。
+#   - 仓库 Settings → Secrets 增加：
+#       CLOUDFLARE_API_TOKEN  （具有 Account 级 "Cloudflare Pages: Edit" 权限的 API Token）
+#       CLOUDFLARE_ACCOUNT_ID （你的账户 ID）
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/deploy-cloudflare-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build H5
+        working-directory: frontend
+        run: npm run build:h5
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: zaima-h5
+          directory: frontend/dist/build/h5
+          branch: main
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
