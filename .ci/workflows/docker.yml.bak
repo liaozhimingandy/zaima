@@ -1,0 +1,125 @@
+# =============================================================================
+# docker.yml  -- 公共 Docker 构建/推送模板（基于 fastapi/vue 真实模式改进）
+# 触发: 推送 v* tag（打 版本号 + sha） / push main（打 latest + sha） / 手动
+# 标签策略(见文档 §9):
+#   推送 vX.Y.Z        -> :<X.Y.Z> + :sha-xxxx        （不自动打 latest）
+#   推送 main / 手动    -> :latest    + :sha-xxxx        （semver 不产生版本号）
+# 作用: 多架构(amd64,arm64)构建并推送镜像仓库
+# 默认仓库: 阿里云 ACR（与 fastapi/deploy.py 一致）；REGISTRY 留空则用 Docker Hub
+#
+# 项目专属变量(Variables):
+#   REGISTRY         默认 registry.cn-hangzhou.aliyuncs.com (Docker Hub 留空 "")
+#   DOCKER_IMAGE     <namespace>/<project>，如 liaozhiming/fastapi_tuiwen
+#   DOCKERFILE_PATH  默认 Dockerfile
+# Secrets（真实命名，ACR 与 Docker Hub 共用）:
+#   DOCKER_USERNAME
+#   DOCKER_PASSWORD
+# 注: 版本号由 git tag 自动提取，无需 PROJECT_VERSION 变量。
+# 用户自定义步骤: 在仓库 .ci/hooks/ 下放 pre-build.sh / post-build.sh 即被调用（详见 .ci/hooks/README.md）。
+# =============================================================================
+name: Docker
+
+on:
+  push:
+    tags: ['v*']
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ${{ vars.REGISTRY || 'registry.cn-hangzhou.aliyuncs.com' }}
+  IMAGE_NAME: ${{ vars.DOCKER_IMAGE }}
+  DOCKERFILE_PATH: ${{ vars.DOCKERFILE_PATH || 'Dockerfile' }}
+
+jobs:
+  build-push:
+    # 设 ENABLE_DOCKER_APP=false 可禁用本工作流（无 Dockerfile 的项目）
+    if: ${{ vars.ENABLE_DOCKER_APP != 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 取完整历史，便于读取 git tag / sha
+
+      - name: Custom pre-build hook (.ci/hooks/pre-build.sh)
+        if: ${{ hashFiles('.ci/hooks/pre-build.sh') != '' }}
+        run: bash .ci/hooks/pre-build.sh
+
+      - name: Set up QEMU (多架构)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          # REGISTRY 留空时登录 Docker Hub；否则登录 ACR
+          registry: ${{ env.REGISTRY != '' && env.REGISTRY || 'docker.io' }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # 版本号(优先 git tag，其次 VERSION) + 自增长构建号(run_number) + 构建信息
+      - name: Generate build metadata
+        id: build
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then VERSION="${GITHUB_REF_NAME#v}"
+          elif [ -f VERSION ]; then VERSION="$(tr -d '[:space:]' < VERSION)"
+          else VERSION="0.0.0"; fi
+          BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          GIT_SHA_SHORT="${GITHUB_SHA::7}"
+          FULL_VERSION="${VERSION}-b${BUILD_NUMBER}"
+          { echo "version=$VERSION"; echo "build_number=$BUILD_NUMBER"; echo "build_date=$BUILD_DATE";
+            echo "git_sha=$GIT_SHA_SHORT"; echo "full_version=$FULL_VERSION"; } >> "$GITHUB_OUTPUT"
+          cat > build-info.json <<JSON
+          {"version":"$VERSION","build_number":$BUILD_NUMBER,"full_version":"$FULL_VERSION","git_sha":"$GIT_SHA_SHORT","git_ref":"${GITHUB_REF}","build_date":"$BUILD_DATE","repository":"${GITHUB_REPOSITORY}","run_id":"${GITHUB_RUN_ID}"}
+          JSON
+
+      - name: Docker meta (tags: sha / full_version / semver / latest)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY != '' && format('{0}/{1}', env.REGISTRY, env.IMAGE_NAME) || env.IMAGE_NAME }}
+          tags: |
+            # 不可变短哈希：回滚锚点（首选）
+            type=sha,enable=true,priority=100,prefix=sha-,format=short
+            # 完整构建版本，如 1.2.3-b45：精确到某次打包
+            type=raw,value=${{ steps.build.outputs.full_version }}
+            # 推送 vX.Y.Z tag 时额外打语义版本
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            # latest 仅 main
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.build.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.build.outputs.build_date }}
+            build.number=${{ steps.build.outputs.build_number }}
+            build.date=${{ steps.build.outputs.build_date }}
+            build.full_version=${{ steps.build.outputs.full_version }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE_PATH }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_VERSION=${{ steps.build.outputs.full_version }}
+            BUILD_NUMBER=${{ steps.build.outputs.build_number }}
+            BUILD_DATE=${{ steps.build.outputs.build_date }}
+            GIT_SHA=${{ steps.build.outputs.git_sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Custom post-build hook (.ci/hooks/post-build.sh)
+        if: ${{ hashFiles('.ci/hooks/post-build.sh') != '' }}
+        run: bash .ci/hooks/post-build.sh
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}

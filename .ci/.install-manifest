@@ -1,4 +1,4 @@
-# ci-cd-template installed files (2026-10-27T13:33:52Z)
+# ci-cd-template installed files (2026-10-27T13:51:15Z)
 .ci/docker-assets/Dockerfile.assets
 .ci/docs/CI-CD-STANDARD.md
 .ci/examples/.dockerignore.example
@@ -28,3 +28,4 @@
 .ci/workflows/docker.yml
 .ci/workflows/release.yml
 .ci/workflows/static.yml
+.github/workflows/ci-cd.yml

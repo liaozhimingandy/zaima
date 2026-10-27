@@ -18,7 +18,8 @@ enable:
 docker:
   registry: registry.cn-hangzhou.aliyuncs.com   # 阿里云 ACR；Docker Hub 填 docker.io（勿留空）
   image: liaozhiming/rhapsody     # <namespace>/<project>
-  dockerfile: Dockerfile          # 多服务时另起 Dockerfile-<svc>
+  dockerfile: Dockerfile          # 相对仓库根；如 backend/Dockerfile
+  context: .                      # 构建上下文；后端在子目录时填 backend/
   platforms: linux/amd64,linux/arm64
 
 static:

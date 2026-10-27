@@ -387,7 +387,7 @@ ci-cd-template/          # ★ 整个文件夹拷到项目即可
 └── README.md            # 通用 vs 专属 对照表
 ```
 
-- **交互式安装**：`bash install.sh /path/to/project`（`--yes` 全默认、`--dry-run` 预览、`--reconfigure` 改配置并自动备份 `.bak`）。向导自动探测项目、逐项询问（回车=默认），生成 `.ci/project.config.yaml` 与 `.ci/scripts/apply-github-config.sh`，并打印「在哪里调整」。默认**跳过已存在文件**，绝不覆盖。
+- **交互式安装**：`bash install.sh /path/to/project`（`--yes` 全默认、`--dry-run` 预览、`--reconfigure` 改配置、`--update` 升级模板）。向导自动探测项目、逐项询问（回车=默认），生成 `.ci/project.config.yaml` 与 `.ci/scripts/apply-github-config.sh`，并打印「在哪里调整」。默认**跳过已存在文件**，绝不覆盖；`--update` 只覆盖 `.ci/` 与 `ci-cd.yml`（保留配置，旧文件备份 `.bak`）。
 - **安装后布局**（不干扰原有 `scripts/`、`docs/`）：
   ```text
   <项目>/
@@ -491,7 +491,8 @@ setup ─┬─ ci              测试/检查（PR 与 push 都跑，质量门�
 | `enable.static_cloudflare` | `ENABLE_STATIC_CLOUDFLARE` | `false` | Cloudflare Pages 部署 |
 | `docker.registry` | `REGISTRY` | `docker.io` 或 `registry.cn-hangzhou.aliyuncs.com` | 镜像仓库；**Docker Hub 填 `docker.io`** |
 | `docker.image` | `DOCKER_IMAGE` | `liaozhiming/vue_tuiwen` | `<namespace>/<project>` |
-| `docker.dockerfile` | `DOCKERFILE_PATH` | `Dockerfile` | 应用镜像 Dockerfile |
+| `docker.dockerfile` | `DOCKERFILE_PATH` | `Dockerfile` | 应用镜像 Dockerfile（相对仓库根） |
+| `docker.context` | — | `.` 或 `backend` | 应用镜像构建上下文（monorepo） |
 | `static.build_command` | `STATIC_BUILD_CMD` | `npm run build` | 编译 HTML 的命令 |
 | `static.output_dir` | `STATIC_DIST_DIR` | `dist` | 构建产物目录（相对前端目录） |
 | `static.assets_image.dockerfile` | `ASSETS_DOCKERFILE` | `.ci/docker-assets/Dockerfile.assets` | 静态资源镜像 Dockerfile |

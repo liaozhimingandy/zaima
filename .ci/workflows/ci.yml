@@ -1,12 +1,8 @@
 # =============================================================================
 # ci.yml  -- 公共 CI 模板（任意工程 drop-in）
 # 触发: push 到 main/develop / 任意 PR
-# 作用: 自动识别后端(Python)或前端(Node)，执行对应 lint/test；无对应语言则跳过
-# 用户自定义步骤: 在仓库 .ci/hooks/ci.sh 放入项目专属检查（lint/test 之后运行，详见 .ci/hooks/README.md）
-#
-# 项目专属变量(GitHub Variables):
-#   PYTHON_VERSION  默认 3.14
-#   NODE_VERSION   默认 22
+# 作用: 自动探测前后端目录（根或子目录），分别执行 lint/test；无对应语言则跳过
+# 用户自定义步骤: 在 .ci/hooks/ci.sh 放入项目专属检查（详见 .ci/hooks/README.md）
 # =============================================================================
 name: CI
 
@@ -30,8 +26,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 自动定位前端/后端目录（支持 frontend/ backend/ server/ 等子目录）
+      - name: Detect project dirs
+        id: fe
+        run: |
+          if [ -f .ci/scripts/detect-frontend.sh ]; then
+            bash .ci/scripts/detect-frontend.sh >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "frontend_dir=."; echo "frontend_lock="; echo "frontend_pm=npm"
+              echo "frontend_has_build=false"; echo "frontend_build_cmd="
+              echo "has_frontend=$([ -f package.json ] && echo true || echo false)"
+              echo "backend_dir=."
+              echo "has_backend=$([ -f pyproject.toml ] || [ -f requirements.txt ] || [ -f setup.py ] && echo true || echo false)"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Backend (Python) setup + lint + test
-        if: ${{ hashFiles('pyproject.toml', 'requirements.txt', 'setup.py') != '' }}
+        if: ${{ steps.fe.outputs.has_backend == 'true' }}
+        working-directory: ${{ steps.fe.outputs.backend_dir }}
         run: |
           command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
           export PATH="$HOME/.local/bin:$PATH"
@@ -40,17 +53,11 @@ jobs:
           uv run ruff check . 2>/dev/null || true
           if [ -f uv.lock ]; then uv run pytest -q; else pytest -q 2>/dev/null || true; fi
 
-      # 自动定位前端目录（可能在子目录），并找到锁文件
-      - name: Detect frontend dir
-        id: fe
-        run: bash .ci/scripts/detect-frontend.sh >> "$GITHUB_OUTPUT"
-
-      - name: Frontend (Node) setup + lint + test
+      - name: Frontend (Node) setup
         if: ${{ steps.fe.outputs.has_frontend == 'true' }}
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          # 有锁文件才开缓存；留空避免 “Dependencies lock file is not found”
           cache: ${{ steps.fe.outputs.frontend_lock != '' && steps.fe.outputs.frontend_pm || '' }}
           cache-dependency-path: ${{ steps.fe.outputs.frontend_lock }}
       - name: Frontend install + lint + test
