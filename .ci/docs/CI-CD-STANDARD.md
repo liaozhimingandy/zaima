@@ -175,7 +175,22 @@ CMD ["fastapi","run","main.py","--host","0.0.0.0","--port","8000","--proxy-heade
 - `Dockerfile.standalone`：额外用 golang 编译 `md` 二进制（标签 `<ver>`）。
 - 版本号来自 `docker/<ver>/.env` 的 `VER_APP` 等（当前 vue 设为 `latest`，⚠️ 见 D4 应改版本号）。
 
-**(C) 重安装型（rhapsody，已验证）**
+**(C) 应用镜像构建策略（解决「构建超过 10 分钟」）**
+
+`docker-app` 不再盲目用用户 Dockerfile 重编，按 `docker.app_strategy` 选择：
+
+| 策略 | 行为 | 适用 |
+|---|---|---|
+| `auto`（默认） | 纯前端且无 Dockerfile → `nginx-prebuilt`；有 Dockerfile → `dockerfile` | 大多数项目 |
+| `dockerfile` | 使用自动搜索到的 Dockerfile（`docker.dockerfile` 可覆盖） | 后端 / 全栈 |
+| `nginx-prebuilt` | 复用 `build-static` 的 `dist`，`nginx:alpine` 秒级出镜像 | 前端应用（推荐） |
+| `none` | 不构建应用镜像 | 只部署静态资源 |
+
+- **自动搜索 Dockerfile**：`Dockerfile` / `Dockerfile.*` / `*.Dockerfile`，根或子目录，取最浅；`docker.dockerfile` 可指定，`docker.context` 可指定上下文。
+- **默认单架构 `linux/amd64`**：`linux/arm64` 在 amd64 机器上走 QEMU 模拟，极慢，是「构建超过 10 分钟」的常见原因；确需多架构再显式写 `linux/amd64,linux/arm64`。
+- **nginx-prebuilt 模板**：`.ci/docker-app/Dockerfile.nginx`，`COPY dist/`，含 SPA 回退；构建通常几秒。
+
+**(D) 重安装型（rhapsody，已验证）**
 ubuntu:24.04 + 阿里云 apt 源 + OpenJDK17 + 静默安装引擎 + 时区 Asia/Shanghai + 非 root 用户。适合「二进制安装包」类项目。
 
 📋 公共约定：多阶段、最小基础镜像、`--no-install-recommends`、`rm -rf /var/lib/apt/lists/*`、非 root、时区 `Asia/Shanghai`（中国环境）、LABEL maintainer。
@@ -460,18 +475,20 @@ ci-cd-template/          # ★ 整个文件夹拷到项目即可
 ### 16.5 作业编排与产物复用（避免重复构建）
 
 ```text
-setup ─┬─ ci              测试/检查（PR 与 push 都跑，质量门禁）
-       ├─ build-static    前端只编译一次 HTML → 上传 artifact(dist)
-       │      ├─ docker-assets   下载 dist → 打 scratch 镜像（不重编）
-       │      └─ cloudflare      下载 dist → 部署 Pages（不重编）
-       ├─ docker-app      应用镜像（与前端构建并行，互不依赖）
-       └─ release         v* tag 自动发版
+setup ─┬─ ci                测试/检查（PR 与 push 都跑，质量门禁）
+       ├─ build-static      前端只编译一次 HTML → 上传 artifact(dist)
+       │      ├─ docker-app-nginx  dist → nginx:alpine（复用产物，秒级）
+       │      ├─ docker-assets     dist → scratch 镜像（不重编）
+       │      └─ cloudflare        dist → 部署 Pages（不重编）
+       ├─ docker-app        应用镜像（用户 Dockerfile，默认单架构）
+       └─ release           v* tag 自动发版
 ```
 
-- **只编译一次**：HTML 构建集中在 `build-static`，产物经 `actions/upload-artifact` 传递；下游 `docker-assets`/`cloudflare` 用 `download-artifact` 直接复用，**不再各自 `npm ci && npm run build`**。
-- **并行省时**：`docker-app` 与 `build-static` 无依赖、同时跑；`ci` 与构建解耦（CI 只做门禁，构建产出 artifact）。
-- **按需跳过**：`ENABLE_DOCKER_ASSETS` 与 `ENABLE_STATIC_CLOUDFLARE` 全关时，`build-static` 直接跳过，前端完全不编译。
-- **取消旧运行**：`concurrency` 对 PR 取消被覆盖的旧任务，避免排队浪费。
+- **只编译一次**：HTML 构建集中在 `build-static`，产物经 `actions/upload-artifact` 传递；下游 `docker-app-nginx`/`docker-assets`/`cloudflare` 直接复用，**不再各自 `npm ci && npm run build`**。
+- **并行省时**：`docker-app`（Dockerfile）与 `build-static` 无依赖、同时跑；`ci` 与构建解耦。
+- **按需跳过**：`ENABLE_DOCKER_ASSETS`、`ENABLE_STATIC_CLOUDFLARE` 全关且 `app_strategy != nginx-prebuilt` 时，`build-static` 直接跳过。
+- **慢构建治理**：默认 `linux/amd64`（arm64 QEMU 极慢）；前端用 `nginx-prebuilt` 复用 `dist`，避免 Docker 内二次构建。
+- **取消旧运行**：`concurrency` 对 PR 取消被覆盖的旧任务。
 
 > ⚠️ 模块化的 `docker-assets.yml` 与 `static.yml` 若**同时启用**，会各自编译一次前端（跨工作流无法共享 artifact）。需要「编译一次复用」时，请使用统一 `ci-cd.yml`。
 
@@ -491,8 +508,10 @@ setup ─┬─ ci              测试/检查（PR 与 push 都跑，质量门�
 | `enable.static_cloudflare` | `ENABLE_STATIC_CLOUDFLARE` | `false` | Cloudflare Pages 部署 |
 | `docker.registry` | `REGISTRY` | `docker.io` 或 `registry.cn-hangzhou.aliyuncs.com` | 镜像仓库；**Docker Hub 填 `docker.io`** |
 | `docker.image` | `DOCKER_IMAGE` | `liaozhiming/vue_tuiwen` | `<namespace>/<project>` |
-| `docker.dockerfile` | `DOCKERFILE_PATH` | `Dockerfile` | 应用镜像 Dockerfile（相对仓库根） |
-| `docker.context` | — | `.` 或 `backend` | 应用镜像构建上下文（monorepo） |
+| `docker.dockerfile` | `DOCKERFILE_PATH` | `""`（自动搜索）或 `backend/Dockerfile` | 应用镜像 Dockerfile |
+| `docker.context` | — | `""`（自动）或 `backend` | 构建上下文（monorepo） |
+| `docker.platforms` | — | `linux/amd64` | 默认单架构；多架构才写 `linux/amd64,linux/arm64` |
+| `docker.app_strategy` | — | `auto` / `dockerfile` / `nginx-prebuilt` / `none` | 应用镜像策略（见 §7C） |
 | `static.build_command` | `STATIC_BUILD_CMD` | `npm run build` | 编译 HTML 的命令 |
 | `static.output_dir` | `STATIC_DIST_DIR` | `dist` | 构建产物目录（相对前端目录） |
 | `static.assets_image.dockerfile` | `ASSETS_DOCKERFILE` | `.ci/docker-assets/Dockerfile.assets` | 静态资源镜像 Dockerfile |

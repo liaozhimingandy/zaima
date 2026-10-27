@@ -14,6 +14,7 @@
 #   frontend_dir / frontend_lock / frontend_pm / has_frontend
 #   frontend_has_build / frontend_build_script / frontend_build_cmd
 #   backend_dir / has_backend
+#   dockerfile_found / dockerfile_dir / dockerfile_count
 # =============================================================================
 set -euo pipefail
 
@@ -75,6 +76,20 @@ while IFS= read -r f; do
 done < <(find . -maxdepth 4 \( -name pyproject.toml -o -name requirements.txt -o -name setup.py \) \
            -not -path '*/node_modules/*' -not -path './.git/*' -not -path './.ci/*' 2>/dev/null | sort)
 
+# Dockerfile：搜索根/子目录（排除 node_modules/.git/.ci），取最浅一个，记录总数
+df=""; df_rank=-999; df_count=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  df_count=$((df_count+1))
+  depth=$(awk -F/ '{print NF-1}' <<< "$f")
+  rank=$((0 - depth))
+  if [ "$rank" -gt "$df_rank" ]; then df="$f"; df_rank="$rank"; fi
+done < <(find . -maxdepth 4 \( -name 'Dockerfile' -o -name 'Dockerfile.*' -o -name '*.Dockerfile' \) \
+           -not -path '*/node_modules/*' -not -path './.git/*' -not -path './.ci/*' 2>/dev/null | sort)
+df="${df#./}"
+dfdir="."
+if [ -n "$df" ]; then dfdir="$(dirname "$df")"; fi
+
 echo "frontend_dir=${best:-.}"
 echo "frontend_lock=${best_lock}"
 echo "frontend_pm=${best_pm:-npm}"
@@ -84,6 +99,10 @@ echo "frontend_build_script=${best_script}"
 echo "frontend_build_cmd=$([ -n "$best_script" ] && echo "npm run $best_script" || echo "")"
 echo "backend_dir=${backend:-.}"
 echo "has_backend=$([ -n "$backend" ] && echo true || echo false)"
+echo "dockerfile_found=$df"
+echo "dockerfile_dir=$dfdir"
+echo "dockerfile_count=$df_count"
 
 echo "detected frontend: dir=${best:-.} lock=${best_lock:-<none>} pm=${best_pm:-npm} build=${best_script:-<none>}" >&2
 echo "detected backend:  dir=${backend:-.}" >&2
+echo "detected dockerfile: ${df:-<none>} (count=$df_count)" >&2
