@@ -1,0 +1,7 @@
+# Cloudflare Pages 静态托管配置
+# 作用：提供有效 wrangler 配置，让 Cloudflare 跳过 automatic configuration（Vite 自动集成），
+#       避免其强制要求 Vite >= 6.0.0 而与 uni-app 锁定的 Vite 5.2.8 冲突。
+# 本项目为纯静态 H5（vue-router hash 模式），无需 Workers/Vite 插件，直接托管 dist/build/h5。
+name = "zaima-h5"
+pages_build_output_dir = "dist/build/h5"
+compatibility_date = "2026-10-27"
