@@ -6,13 +6,18 @@ name: Build Images
 # 为什么单独拆出来：镜像是「公共层」，其它项目也会直接拉取使用，
 # 因此把镜像构建/推送与 release（测试、产物、GitHub Release）解耦。
 #
+# 版本号遵循 Django 发布模型（https://docs.djangoproject.com/en/6.1/internals/release-process/）：
+#   vA.B            功能发布 feature release，如 v1.0 / v2.1
+#   vA.B.C          补丁发布 patch release，如 v1.0.1 / v2.1.3
+#   vA.B(a|b|rc)N    预发布 alpha/beta/rc，如 v1.0rc1 / v1.0-rc1（不占用 latest）
+#   （未打标签的开发构建统一用 dev，不附加 sha 标签，避免每次提交都产生大量一次性标签）
+#
 # 统一镜像仓库（默认 <owner>/zaima），用标签前缀区分用途：
 #   后端 API        zaima:<ver>            / latest / sha-<sha>
 #   一体化调试      zaima:app-<ver>        / app-latest / app-sha-<sha>
 #   H5 可运行(nginx) zaima:h5-<ver>        / h5-latest / h5-sha-<sha>
 #   H5 纯产物(scratch) zaima:h5-assets-<ver> / h5-assets-latest / h5-assets-sha-<sha>
-#   （<ver>：release 推送用语义化版本号；未打标签的开发构建统一用 dev，且不再附加 sha
-#      标签，避免每次提交都产生大量一次性标签把镜像仓库塞满）
+#   （release 的 <ver> 用语义化版本号；dev 构建只打 dev / latest，不附加 sha，防止镜像堆积）
 #
 # 登录凭据（Docker Hub）：支持两种方式，任选其一
 #   - DOCKER_TOKEN   （Personal Access Token，推荐，支持开启 2FA 的账号）
@@ -97,7 +102,8 @@ jobs:
           set -euo pipefail
           FULL_SHA="${GITHUB_SHA}"
           SHORT_SHA="${GITHUB_SHA::7}"
-          SEMVER_RE='^v[0-9]+\.[0-9]+(\.[0-9]+)?((a|b|rc)[0-9]+)?$'
+          # Django 风格版本号：vA.B / vA.B.C / vA.B(a|b|rc)N，预发布同时支持 v1.0rc1 与 v1.0-rc1 两种写法
+          SEMVER_RE='^v[0-9]+\.[0-9]+(\.[0-9]+)?(-?(a|b|rc)[0-9]+)?$'
 
           VERSION="${INPUT_VERSION:-}"
           SHOULD_PUSH="false"
