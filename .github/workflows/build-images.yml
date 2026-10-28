@@ -1,40 +1,32 @@
 name: Build Images
 
 # =============================================================================
-# 独立的镜像构建工作流（触发时机与 release.yml 一致：main 相关路径 + v* tag + 手动）。
+# 通用镜像构建工作流（可直接拷贝到其它项目复用）
 #
-# 为什么单独拆出来：镜像是「公共层」，其它项目也会直接拉取使用，
-# 因此把镜像构建/推送与 release（测试、产物、GitHub Release）解耦。
+# 职责：镜像构建/推送 与 测试/产物/Release 解耦，作为公共层被其它项目直接拉取。
+# 按触发来源算出版本号，构建 4 类镜像：
+#   后端 API / 一体化(app-) / H5 可运行 nginx(h5-) / H5 纯产物 scratch(h5-assets-)
 #
-# 版本号遵循 Django 发布模型（https://docs.djangoproject.com/en/6.1/internals/release-process/）：
-#   vA.B            功能发布 feature release，如 v1.0 / v2.1
-#   vA.B.C          补丁发布 patch release，如 v1.0.1 / v2.1.3
-#   vA.B(a|b|rc)N    预发布 alpha/beta/rc，如 v1.0rc1 / v1.0-rc1（不占用 latest）
-#   （未打标签的开发构建统一用 dev，不附加 sha 标签，避免每次提交都产生大量一次性标签）
+# 触发与版本映射（版本号遵循 Django 发布模型）：
+#   main 推送              → 开发构建 dev（仅 dev/latest，不附加 sha，防堆积）
+#   stable/A.B.x 分支推送   → 系列补丁构建，版本=A.B，滚动 zaima:A.B / zaima:A
+#   v* Tag（vA.B / vA.B.C） → 正式发布；vA.B.C 同时滚动 zaima:A.B / zaima:A
+#   v*A(a|b|rc)N / v*A.B-(a|b|rc)N → 预发布(alpha/beta/rc)，不占 latest
+#   手动 dispatch          → 可覆盖版本号；留空打 dev，填 A.B 打稳定系列镜像
 #
-# 统一镜像仓库（默认 <owner>/zaima），用标签前缀区分用途：
-#   后端 API        zaima:<ver>            / latest / sha-<sha>
-#   一体化调试      zaima:app-<ver>        / app-latest / app-sha-<sha>
-#   H5 可运行(nginx) zaima:h5-<ver>        / h5-latest / h5-sha-<sha>
-#   H5 纯产物(scratch) zaima:h5-assets-<ver> / h5-assets-latest / h5-assets-sha-<sha>
-#   （release 的 <ver> 用语义化版本号；dev 构建只打 dev / latest，不附加 sha，防止镜像堆积）
-#
-# 登录凭据（Docker Hub）：支持两种方式，任选其一
-#   - DOCKER_TOKEN   （Personal Access Token，推荐，支持开启 2FA 的账号）
-#   - DOCKER_PASSWORD（用户名 + 密码，未开启 2FA 时可用）
-#   用户名统一用 DOCKER_USERNAME（也可放在 Variables）。
-#
-# 阿里云 ACR 推送（可选）：配置以下 Secrets / Variables 后自动同时推送
-#   secrets:   ALIYUN_REGISTRY / ALIYUN_USERNAME / ALIYUN_PASSWORD
-#   variables: ALIYUN_NAMESPACE
-# 未配置 ALIYUN_REGISTRY 时自动跳过，不影响 Docker Hub 推送。
+# 复用需改（详见下方 on.push.paths / env 注释）：
+#   1) env.DEFAULT_IMAGE_NAME 或 Variables.DOCKER_REPOSITORY（镜像名）
+#   2) on.push.paths、env.NODE_VERSION、各 Dockerfile 路径（目录结构）
+#   3) 各作业的 GHA 缓存作用域 scope=...（含项目 slug，需一并替换）
+#   4) 凭据 Secrets：DOCKER_USERNAME + (DOCKER_TOKEN 或 DOCKER_PASSWORD)
+#   5) 可选阿里云 ACR：ALIYUN_REGISTRY / ALIYUN_USERNAME / ALIYUN_PASSWORD + ALIYUN_NAMESPACE
 # =============================================================================
 
 on:
   push:
-    branches: [main]
-    tags: ['v*']
-    # 与 release.yml 保持一致的路径过滤（tag 推送不受 paths 影响）
+    branches: [main, 'stable/**']   # stable/A.B.x 系列分支：打该系列补丁镜像
+    tags: ['v*']                    # vA.B / vA.B.C / vA.B(a|b|rc)N
+    # 路径过滤（tag 推送不受 paths 影响）。其它项目按需调整目录：
     paths:
       - 'backend/**'
       - 'frontend/**'
@@ -46,7 +38,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '覆盖版本号（留空则开发构建打 dev 标签，tag 推送用 tag 名）'
+        description: '覆盖版本号（留空打 dev；填 A.B 打稳定系列镜像；tag 推送用 tag 名）'
         required: false
         type: string
       push:
@@ -64,8 +56,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: '22'
+  NODE_VERSION: '22'            # 复用其它项目时按自身 Node 版本调整
   REGISTRY: docker.io
+  DEFAULT_IMAGE_NAME: zaima     # 默认镜像名（owner/zaima）；或设置 Variables.DOCKER_REPOSITORY 覆盖
+  ENABLE_FLOATING_TAGS: 'true'  # 正式发布/稳定分支是否滚动 A.B、A 浮动标签（Django 风格）
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -95,6 +89,7 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_PUSH: ${{ inputs.push }}
           DOCKER_REPOSITORY: ${{ vars.DOCKER_REPOSITORY }}
+          ENABLE_FLOATING_TAGS: ${{ vars.ENABLE_FLOATING_TAGS }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
           ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
           ALIYUN_NAMESPACE: ${{ vars.ALIYUN_NAMESPACE || 'zaima' }}
@@ -104,40 +99,62 @@ jobs:
           SHORT_SHA="${GITHUB_SHA::7}"
           # Django 风格版本号：vA.B / vA.B.C / vA.B(a|b|rc)N，预发布同时支持 v1.0rc1 与 v1.0-rc1 两种写法
           SEMVER_RE='^v[0-9]+\.[0-9]+(\.[0-9]+)?(-?(a|b|rc)[0-9]+)?$'
+          # 稳定分支：stable/A.B.x 或 stable/A.B
+          SERIES_RE='^stable/([0-9]+\.[0-9]+)(\.x)?$'
 
-          VERSION="${INPUT_VERSION:-}"
+          VERSION=""
           SHOULD_PUSH="false"
           IS_RELEASE="false"
           IS_PRERELEASE="false"
           IS_DEV="false"
+          IS_STABLE="false"      # 是否稳定系列构建（stable 分支或手动指定 A.B）
+          SERIES=""              # 系列号 A.B（用于浮动标签）
           LATEST="false"
+          FLOATING="${ENABLE_FLOATING_TAGS:-true}"
 
           if [ "${EVENT_NAME}" = "push" ] && [ "${REF_TYPE}" = "tag" ]; then
             if ! [[ "${REF_NAME}" =~ ${SEMVER_RE} ]]; then
-              echo "::error::Tag ${REF_NAME} 不符合规范"
+              echo "::error::Tag ${REF_NAME} 不符合规范（vA.B / vA.B.C / vA.B(a|b|rc)N，预发布 v1.0-rc1）"
               exit 1
             fi
             VERSION="${REF_NAME#v}"
             SHOULD_PUSH="true"
             IS_RELEASE="true"
             if [[ "${VERSION}" =~ (a|b|rc)[0-9]+$ ]]; then IS_PRERELEASE="true"; fi
-            if [ "${IS_PRERELEASE}" != "true" ]; then LATEST="true"; fi
-          elif [ "${EVENT_NAME}" = "push" ]; then
-            # 未打标签的开发构建：统一用 dev，不附加 commit sha，避免每次提交都产生新标签把仓库塞满
-            VERSION="${VERSION:-dev}"
-            SHOULD_PUSH="true"
-            IS_DEV="true"
-            LATEST="true"
+            # 稳定（非预发布）发布滚动 A.B / A 浮动标签
+            if [ "${IS_PRERELEASE}" != "true" ]; then
+              LATEST="true"
+              SERIES=$(echo "${VERSION}" | cut -d. -f1,2)
+            fi
+          elif [ "${EVENT_NAME}" = "push" ] && [ "${REF_TYPE}" = "branch" ]; then
+            if [[ "${REF_NAME}" =~ ${SERIES_RE} ]]; then
+              # stable/A.B.x：该系列补丁构建，版本=A.B，滚动 A.B / A（不占 latest）
+              SERIES="${BASH_REMATCH[1]}"
+              VERSION="${SERIES}"
+              IS_STABLE="true"
+              SHOULD_PUSH="true"
+            elif [ "${REF_NAME}" = "main" ]; then
+              # 开发构建：固定 dev，不附加 sha，避免每次提交产生新标签
+              VERSION="dev"
+              IS_DEV="true"
+              SHOULD_PUSH="true"
+              LATEST="true"
+            else
+              # 其它分支（feature 等）不构建镜像
+              SHOULD_PUSH="false"
+            fi
           elif [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
-            VERSION="${VERSION:-dev}"
+            VERSION="${INPUT_VERSION:-dev}"
             SHOULD_PUSH="${INPUT_PUSH:-true}"
             if [ "${SHOULD_PUSH}" = "true" ]; then LATEST="true"; fi
             if [ "${VERSION}" = "dev" ]; then IS_DEV="true"; fi
+            # 手动指定 A.B 视为稳定系列构建（滚动 A.B / A）
+            if [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+$ ]]; then IS_STABLE="true"; SERIES="${VERSION}"; LATEST="false"; fi
           fi
 
           [ -n "${VERSION}" ] || { echo "::error::无法确定版本号"; exit 1; }
 
-          IMAGE="${DOCKER_REPOSITORY:-${GITHUB_REPOSITORY_OWNER}/zaima}"
+          IMAGE="${DOCKER_REPOSITORY:-${GITHUB_REPOSITORY_OWNER}/${DEFAULT_IMAGE_NAME}}"
           IMAGE_ALI=""
           if [ -n "${ALIYUN_REGISTRY:-}" ]; then
             IMAGE_ALI="${ALIYUN_REGISTRY}/${ALIYUN_NAMESPACE}/$(basename "${IMAGE}")"
@@ -147,17 +164,26 @@ jobs:
           tag_lines() {
             local p="$1" out
             out="${IMAGE}:${p}${VERSION}"
-            # 仅 release 构建附加 per-commit 的 sha 标签；dev 构建跳过，避免标签无限堆积
+            # 仅非 dev 构建附加 per-commit 的 sha 标签（dev 不附加，避免堆积）
             if [ "${IS_DEV}" != "true" ]; then
               out="${out}"$'\n'"${IMAGE}:${p}sha-${SHORT_SHA}"
             fi
             if [ "${LATEST}" = "true" ]; then out="${out}"$'\n'"${IMAGE}:${p}latest"; fi
+            # 浮动系列标签（Django 风格）：让 zaima:A.B / zaima:A 始终指向该系列最新（仅稳定发布/分支）
+            if [ "${FLOATING}" = "true" ] && [ -n "${SERIES}" ]; then
+              out="${out}"$'\n'"${IMAGE}:${p}${SERIES}"
+              out="${out}"$'\n'"${IMAGE}:${p}$(echo "${SERIES}" | cut -d. -f1)"
+            fi
             if [ -n "${IMAGE_ALI}" ]; then
               out="${out}"$'\n'"${IMAGE_ALI}:${p}${VERSION}"
               if [ "${IS_DEV}" != "true" ]; then
                 out="${out}"$'\n'"${IMAGE_ALI}:${p}sha-${SHORT_SHA}"
               fi
               if [ "${LATEST}" = "true" ]; then out="${out}"$'\n'"${IMAGE_ALI}:${p}latest"; fi
+              if [ "${FLOATING}" = "true" ] && [ -n "${SERIES}" ]; then
+                out="${out}"$'\n'"${IMAGE_ALI}:${p}${SERIES}"
+                out="${out}"$'\n'"${IMAGE_ALI}:${p}$(echo "${SERIES}" | cut -d. -f1)"
+              fi
             fi
             printf '%s\n' "${out}" | awk 'NF && !seen[$0]++'
           }
@@ -182,6 +208,10 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
           {
+            RTYPE="开发(dev)"
+            [ "${IS_STABLE}" = "true" ] && RTYPE="稳定系列(${SERIES})"
+            [ "${IS_RELEASE}" = "true" ] && RTYPE="正式发布"
+            [ "${IS_PRERELEASE}" = "true" ] && RTYPE="预发布"
             echo "### 镜像构建计划"
             echo ""
             echo "| 项目 | 值 |"
@@ -189,6 +219,8 @@ jobs:
             echo "| 事件 | \`${EVENT_NAME}\` |"
             echo "| 引用 | \`${REF_TYPE}:${REF_NAME}\` |"
             echo "| 版本 | \`${VERSION}\` |"
+            echo "| 系列 | \`${SERIES:-—}\` |"
+            echo "| 类型 | \`${RTYPE}\` |"
             echo "| 镜像仓库 | \`${IMAGE}\` |"
             if [ -n "${IMAGE_ALI}" ]; then
               echo "| 阿里云 ACR | ${IMAGE_ALI} |"
