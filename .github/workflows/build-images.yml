@@ -1,0 +1,381 @@
+name: Build Images
+
+# =============================================================================
+# 独立的镜像构建工作流（触发时机与 release.yml 一致：main 相关路径 + v* tag + 手动）。
+#
+# 为什么单独拆出来：镜像是「公共层」，其它项目也会直接拉取使用，
+# 因此把镜像构建/推送与 release（测试、产物、GitHub Release）解耦。
+#
+# 统一镜像仓库（默认 <owner>/zaima），用标签前缀区分用途：
+#   后端 API        zaima:<ver>            / latest / sha-<sha>
+#   一体化调试      zaima:app-<ver>        / app-latest / app-sha-<sha>
+#   H5 可运行(nginx) zaima:h5-<ver>        / h5-latest / h5-sha-<sha>
+#   H5 纯产物(scratch) zaima:h5-assets-<ver> / h5-assets-latest / h5-assets-sha-<sha>
+#
+# 阿里云 ACR 推送（可选）：配置以下 Secrets / Variables 后自动同时推送
+#   secrets:   ALIYUN_REGISTRY / ALIYUN_USERNAME / ALIYUN_PASSWORD
+#   variables: ALIYUN_NAMESPACE
+# 未配置 ALIYUN_REGISTRY 时自动跳过，不影响 Docker Hub 推送。
+# =============================================================================
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    # 与 release.yml 保持一致的路径过滤（tag 推送不受 paths 影响）
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'Dockerfile'
+      - 'Dockerfile.app'
+      - 'Dockerfile.nginx'
+      - '.dockerignore'
+      - '.github/workflows/build-images.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '覆盖版本号（留空则 main 用 dev-<sha>，tag 用 tag 名）'
+        required: false
+        type: string
+      push:
+        description: '是否推送到镜像仓库'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-images-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '22'
+  REGISTRY: docker.io
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) 计算版本 / 标签（含可选的阿里云 ACR 目标）
+  # ---------------------------------------------------------------------------
+  meta:
+    name: 计算版本与镜像标签
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.calc.outputs.version }}
+      short_sha: ${{ steps.calc.outputs.short_sha }}
+      image: ${{ steps.calc.outputs.image }}
+      should_push: ${{ steps.calc.outputs.should_push }}
+      aliyun_enabled: ${{ steps.calc.outputs.aliyun_enabled }}
+      backend_tags: ${{ steps.calc.outputs.backend_tags }}
+      app_tags: ${{ steps.calc.outputs.app_tags }}
+      h5_tags: ${{ steps.calc.outputs.h5_tags }}
+      h5_assets_tags: ${{ steps.calc.outputs.h5_assets_tags }}
+    steps:
+      - name: 计算
+        id: calc
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PUSH: ${{ inputs.push }}
+          DOCKER_REPOSITORY: ${{ vars.DOCKER_REPOSITORY }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
+          ALIYUN_NAMESPACE: ${{ vars.ALIYUN_NAMESPACE || 'zaima' }}
+        run: |
+          set -euo pipefail
+          FULL_SHA="${GITHUB_SHA}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          SEMVER_RE='^v[0-9]+\.[0-9]+(\.[0-9]+)?((a|b|rc)[0-9]+)?$'
+
+          VERSION="${INPUT_VERSION:-}"
+          SHOULD_PUSH="false"
+          IS_RELEASE="false"
+          IS_PRERELEASE="false"
+          LATEST="false"
+
+          if [ "${EVENT_NAME}" = "push" ] && [ "${REF_TYPE}" = "tag" ]; then
+            if ! [[ "${REF_NAME}" =~ ${SEMVER_RE} ]]; then
+              echo "::error::Tag ${REF_NAME} 不符合规范"
+              exit 1
+            fi
+            VERSION="${REF_NAME#v}"
+            SHOULD_PUSH="true"
+            IS_RELEASE="true"
+            if [[ "${VERSION}" =~ (a|b|rc)[0-9]+$ ]]; then IS_PRERELEASE="true"; fi
+            if [ "${IS_PRERELEASE}" != "true" ]; then LATEST="true"; fi
+          elif [ "${EVENT_NAME}" = "push" ]; then
+            VERSION="${VERSION:-dev-${SHORT_SHA}}"
+            SHOULD_PUSH="true"
+            LATEST="true"
+          elif [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            VERSION="${VERSION:-dev-${SHORT_SHA}}"
+            SHOULD_PUSH="${INPUT_PUSH:-true}"
+            if [ "${SHOULD_PUSH}" = "true" ]; then LATEST="true"; fi
+          fi
+
+          [ -n "${VERSION}" ] || { echo "::error::无法确定版本号"; exit 1; }
+
+          IMAGE="${DOCKER_REPOSITORY:-${GITHUB_REPOSITORY_OWNER}/zaima}"
+          IMAGE_ALI=""
+          if [ -n "${ALIYUN_REGISTRY:-}" ]; then
+            IMAGE_ALI="${ALIYUN_REGISTRY}/${ALIYUN_NAMESPACE}/$(basename "${IMAGE}")"
+          fi
+
+          # 生成某个前缀下的全部标签（Docker Hub + 可选阿里云）
+          tag_lines() {
+            local p="$1" out
+            out="${IMAGE}:${p}${VERSION}"
+            out="${out}"$'\n'"${IMAGE}:${p}sha-${SHORT_SHA}"
+            if [ "${LATEST}" = "true" ]; then out="${out}"$'\n'"${IMAGE}:${p}latest"; fi
+            if [ -n "${IMAGE_ALI}" ]; then
+              out="${out}"$'\n'"${IMAGE_ALI}:${p}${VERSION}"
+              out="${out}"$'\n'"${IMAGE_ALI}:${p}sha-${SHORT_SHA}"
+              if [ "${LATEST}" = "true" ]; then out="${out}"$'\n'"${IMAGE_ALI}:${p}latest"; fi
+            fi
+            printf '%s\n' "${out}" | awk 'NF && !seen[$0]++'
+          }
+
+          emit() {
+            local key="$1" p="$2"
+            echo "${key}<<${key}_EOF"
+            tag_lines "${p}"
+            echo "${key}_EOF"
+          }
+
+          {
+            echo "version=${VERSION}"
+            echo "short_sha=${SHORT_SHA}"
+            echo "image=${IMAGE}"
+            echo "should_push=${SHOULD_PUSH}"
+            echo "aliyun_enabled=$([ -n "${IMAGE_ALI}" ] && echo true || echo false)"
+            emit backend_tags ""
+            emit app_tags "app-"
+            emit h5_tags "h5-"
+            emit h5_assets_tags "h5-assets-"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### 镜像构建计划"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 事件 | \`${EVENT_NAME}\` |"
+            echo "| 引用 | \`${REF_TYPE}:${REF_NAME}\` |"
+            echo "| 版本 | \`${VERSION}\` |"
+            echo "| 镜像仓库 | \`${IMAGE}\` |"
+            if [ -n "${IMAGE_ALI}" ]; then
+              echo "| 阿里云 ACR | ${IMAGE_ALI} |"
+            else
+              echo "| 阿里云 ACR | 未配置 |"
+            fi
+            echo "| 是否推送 | \`${SHOULD_PUSH}\` |"
+            echo ""
+            echo '```'
+            tag_lines ""
+            tag_lines "app-"
+            tag_lines "h5-"
+            tag_lines "h5-assets-"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 2) 后端 API 镜像
+  # ---------------------------------------------------------------------------
+  backend-image:
+    name: 后端 API 镜像
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: 配置 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 Docker Hub
+        if: needs.meta.outputs.should_push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: 登录阿里云 ACR
+        if: needs.meta.outputs.should_push == 'true' && needs.meta.outputs.aliyun_enabled == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+
+      - name: 构建并推送后端镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: ${{ needs.meta.outputs.should_push == 'true' }}
+          tags: ${{ needs.meta.outputs.backend_tags }}
+          build-args: |
+            APP_VERSION=${{ needs.meta.outputs.version }}
+            APP_BUILD=${{ needs.meta.outputs.short_sha }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha,scope=zaima-api
+          cache-to: type=gha,scope=zaima-api,mode=max
+          provenance: false
+          sbom: false
+
+  # ---------------------------------------------------------------------------
+  # 3) 一体化调试镜像（API + H5）
+  # ---------------------------------------------------------------------------
+  app-image:
+    name: 一体化镜像（API + H5）
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: 配置 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 Docker Hub
+        if: needs.meta.outputs.should_push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: 登录阿里云 ACR
+        if: needs.meta.outputs.should_push == 'true' && needs.meta.outputs.aliyun_enabled == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+
+      - name: 构建并推送一体化镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.app
+          push: ${{ needs.meta.outputs.should_push == 'true' }}
+          tags: ${{ needs.meta.outputs.app_tags }}
+          build-args: |
+            APP_VERSION=${{ needs.meta.outputs.version }}
+            APP_BUILD=${{ needs.meta.outputs.short_sha }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha,scope=zaima-app
+          cache-to: type=gha,scope=zaima-app,mode=max
+          provenance: false
+          sbom: false
+
+  # ---------------------------------------------------------------------------
+  # 4) H5 镜像（nginx 可运行 + scratch 纯产物）
+  # ---------------------------------------------------------------------------
+  h5-images:
+    name: H5 镜像（nginx / scratch）
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装依赖
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: 构建 H5
+        working-directory: frontend
+        env:
+          VITE_APP_VERSION: ${{ needs.meta.outputs.version }}
+          VITE_APP_BUILD: ${{ needs.meta.outputs.short_sha }}
+        run: npm run build:h5
+
+      - name: 准备 h5-dist
+        run: |
+          set -euo pipefail
+          rm -rf h5-dist && mkdir -p h5-dist
+          cp -r frontend/dist/build/h5/. h5-dist/
+          test -f h5-dist/index.html
+
+      - name: 配置 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 Docker Hub
+        if: needs.meta.outputs.should_push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: 登录阿里云 ACR
+        if: needs.meta.outputs.should_push == 'true' && needs.meta.outputs.aliyun_enabled == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+
+      - name: 构建并推送 H5 nginx 镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.nginx
+          push: ${{ needs.meta.outputs.should_push == 'true' }}
+          tags: ${{ needs.meta.outputs.h5_tags }}
+          cache-from: type=gha,scope=zaima-h5
+          cache-to: type=gha,scope=zaima-h5,mode=max
+          provenance: false
+          sbom: false
+
+      - name: 构建并推送 H5 纯产物镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: ${{ needs.meta.outputs.should_push == 'true' }}
+          tags: ${{ needs.meta.outputs.h5_assets_tags }}
+          cache-from: type=gha,scope=zaima-h5-assets
+          cache-to: type=gha,scope=zaima-h5-assets,mode=max
+          provenance: false
+          sbom: false
+
+      - name: H5 nginx 镜像冒烟
+        if: needs.meta.outputs.should_push == 'true'
+        run: |
+          set -euo pipefail
+          REF=$(printf '%s\n' "${{ needs.meta.outputs.h5_tags }}" | head -1)
+          docker pull "${REF}"
+          docker run -d --name h5-smoke -p 18080:80 "${REF}"
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/ -o /tmp/index.html 2>/dev/null; then ok=1; break; fi
+            sleep 1
+          done
+          test "${ok}" = "1" || { echo "::error::H5 nginx 镜像启动失败"; docker logs h5-smoke; exit 1; }
+          grep -qi '<div id="app"' /tmp/index.html || { echo "::error::首页未返回 H5 入口"; cat /tmp/index.html; exit 1; }
+          echo "H5 nginx 镜像冒烟通过"
+          docker rm -f h5-smoke

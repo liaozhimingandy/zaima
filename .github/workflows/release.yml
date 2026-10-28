@@ -1,13 +1,15 @@
 name: Release
 
 # 触发：
-# - push 到 main：构建前端产物 + 推送开发镜像 dev-<sha>
+# - push 到 main：测试 + 构建前端产物（不构建镜像）
 # - push v* Tag：完整发布；版本号采用 Django 风格（参考 docs.djangoproject.com/en/6.1/internals/release-process/）
 #     vA.B      功能发布 feature release，如 v1.0 / v2.1
 #     vA.B.C    补丁发布 patch release，如 v1.0.1 / v2.1.3
 #     vA.B(a|b|rc)N 预发布 alpha/beta/rc，如 v1.0a1 / v1.0rc2（不占用 latest）
-#   镜像标签：精确 <ver> / sha-<sha> / latest；开启 ENABLE_FLOATING_TAGS 再加 A.B（滚动到该小版本最新补丁）与 A
-# - 手动：默认只构建不发布，必须显式勾选 publish 才会推送镜像
+# - 手动：默认只构建不发布，必须显式勾选 publish 才会发布
+#
+# 镜像构建/推送已拆分到 build-images.yml（公共层，其它项目也会直接拉取），
+# 触发时机与本工作流一致；本工作流只负责测试、前端产物与 GitHub Release。
 on:
   push:
     branches: [main]
@@ -254,7 +256,7 @@ jobs:
             echo "${TAGS:-（不推送）}"
             echo '```'
             echo ""
-            echo "测试镜像（API + H5，含 /app/static，仅用于测试/演示）："
+            echo "以下镜像标签由独立的 Build Images 工作流使用（本工作流不构建镜像）："
             echo ""
             echo '```'
             echo "${APP_TAGS:-（不推送）}"
@@ -473,386 +475,11 @@ jobs:
           echo "::notice title=App 原生构建未配置::uni-app 的 Android/iOS 安装包需要 HBuilderX 云打包或离线原生工程 + 签名证书，当前仓库未配置，本流程不产出 ipa/apk（H5 产物不能代替原生安装包）。"
 
   # ------------------------------------------------------------------
-  # 4.5 前端 H5 镜像（复用上面已构建的 H5 产物，不重复构建）
-  # ------------------------------------------------------------------
-  h5-images:
-    name: H5 镜像（nginx / scratch）
-    needs: [meta, frontend-artifacts]
-    # H5 构建被关闭时跳过（没有产物可复用）
-    if: ${{ vars.BUILD_H5 != 'false' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      # 拉取源码（只需要 Dockerfile / Dockerfile.nginx）
-      - name: 检出代码
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      # 直接复用 frontend-artifacts 上传的 H5 产物到 h5-dist/，避免二次 npm build
-      - name: 下载 H5 产物
-        uses: actions/download-artifact@v4
-        with:
-          name: zaima-frontend-h5-${{ needs.meta.outputs.version }}-${{ needs.meta.outputs.short_sha }}
-          path: h5-dist
-
-      # 产物缺失时给出清晰报错，而不是 Docker 的 cache key 错误
-      - name: 校验 H5 产物
-        run: test -f h5-dist/index.html || { echo "::error::h5-dist/index.html 缺失"; ls -la h5-dist || true; exit 1; }
-
-      # 启用 Buildx 并利用 GHA 缓存
-      - name: 配置 Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      # 仅推送时登录
-      - name: 登录 Docker Hub
-        if: needs.meta.outputs.should_push == 'true'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.DOCKER_USERNAME || vars.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_TOKEN || secrets.DOCKER_PASSWORD }}
-
-      # 可运行测试镜像：nginx:alpine + 产物 → zaima:h5-*
-      - name: 构建并推送 H5 nginx 镜像
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: .
-          file: ./Dockerfile.nginx
-          push: ${{ needs.meta.outputs.should_push == 'true' }}
-          tags: ${{ needs.meta.outputs.h5_tags }}
-          cache-from: type=gha,scope=zaima-h5
-          cache-to: type=gha,scope=zaima-h5,mode=max
-          provenance: false
-          sbom: false
-
-      # 纯产物镜像：scratch 空根 → zaima:h5-assets-*
-      - name: 构建并推送 H5 静态产物镜像
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: ${{ needs.meta.outputs.should_push == 'true' }}
-          tags: ${{ needs.meta.outputs.h5_assets_tags }}
-          cache-from: type=gha,scope=zaima-h5-assets
-          cache-to: type=gha,scope=zaima-h5-assets,mode=max
-          provenance: false
-          sbom: false
-
-      # 冒烟：拉起 nginx 镜像确认首页可访问
-      - name: H5 nginx 镜像冒烟
-        if: needs.meta.outputs.should_push == 'true'
-        run: |
-          set -euo pipefail
-          REF=$(printf '%s\n' "${{ needs.meta.outputs.h5_tags }}" | head -1)
-          docker pull "${REF}"
-          docker run -d --name h5-smoke -p 18080:80 "${REF}"
-          ok=0
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:18080/ -o /tmp/index.html 2>/dev/null; then ok=1; break; fi
-            sleep 1
-          done
-          test "${ok}" = "1" || { echo "::error::H5 nginx 镜像启动失败"; docker logs h5-smoke; exit 1; }
-          grep -qi '<div id="app"' /tmp/index.html || { echo "::error::首页未返回 H5 入口"; cat /tmp/index.html; exit 1; }
-          echo "H5 nginx 镜像冒烟通过"
-          docker rm -f h5-smoke
-
-  # ------------------------------------------------------------------
-  # 5. Docker 镜像构建与条件推送
-  # ------------------------------------------------------------------
-  docker:
-    name: 镜像构建与发布
-    needs: [meta, backend-tests, frontend-checks, frontend-artifacts]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      IMAGE: ${{ needs.meta.outputs.image }}
-      APP_IMAGE: ${{ needs.meta.outputs.app_image }}
-      SHOULD_PUSH: ${{ needs.meta.outputs.should_push }}
-      HAS_DOCKER_CONFIG: ${{ needs.meta.outputs.has_docker_config }}
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      - name: 配置 Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      # 缺少凭据时必须明确失败，而不是静默跳过发布
-      - name: 发布前置校验（凭据）
-        if: needs.meta.outputs.should_push == 'true'
-        env:
-          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME || vars.DOCKER_USERNAME }}
-          DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN || secrets.DOCKER_PASSWORD }}
-        run: |
-          set -euo pipefail
-          missing=0
-          if [ -z "${DOCKER_USERNAME}" ]; then
-            echo "::error title=缺少 DOCKER_USERNAME::请在 Repository secrets 配置 DOCKER_USERNAME（或 Repository variables 配置 DOCKER_USERNAME）"
-            missing=1
-          fi
-          if [ -z "${DOCKER_TOKEN}" ]; then
-            echo "::error title=缺少 DOCKER_TOKEN::请在 Repository secrets 配置 DOCKER_TOKEN（Docker Hub Access Token，注意不要使用登录密码）"
-            missing=1
-          fi
-          if [ "${HAS_DOCKER_CONFIG}" != "true" ]; then
-            echo "::error title=缺少 DOCKER_REPOSITORY::如需自定义镜像仓库，请在 Repository variables 配置 DOCKER_REPOSITORY，例如 liaozhiming/zaima（未配置时默认 <owner>/zaima）"
-            missing=1
-          fi
-          if [ "${missing}" -ne 0 ]; then
-            exit 1
-          fi
-          echo "凭据校验通过，镜像仓库：${IMAGE}"
-
-      # 正式版本默认不可变：已存在的版本标签禁止覆盖
-      - name: 正式版本不可变校验
-        if: needs.meta.outputs.should_push == 'true' && needs.meta.outputs.is_release == 'true'
-        env:
-          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME || vars.DOCKER_USERNAME }}
-          DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN || secrets.DOCKER_PASSWORD }}
-          VERSION: ${{ needs.meta.outputs.version }}
-          FORCE: ${{ inputs.force_tag }}
-        run: |
-          set -euo pipefail
-          if [ "${FORCE}" = "true" ]; then
-            echo "::warning title=允许覆盖版本标签::force_tag=true，将覆盖 ${IMAGE}:${VERSION}"
-            exit 0
-          fi
-          echo "${DOCKER_TOKEN}" | docker login "${REGISTRY}" -u "${DOCKER_USERNAME}" --password-stdin
-          if docker buildx imagetools inspect "${IMAGE}:${VERSION}" > /dev/null 2>&1; then
-            echo "::error title=版本标签已存在::${IMAGE}:${VERSION} 已存在，正式版本不可覆盖。如确需重发，请手动触发并勾选 force_tag。"
-            exit 1
-          fi
-          echo "标签 ${VERSION} 未被占用，可以发布"
-
-      # 登录镜像仓库（仅在需要推送时）
-      - name: 登录 Docker Hub
-        if: needs.meta.outputs.should_push == 'true'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.DOCKER_USERNAME || vars.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_TOKEN || secrets.DOCKER_PASSWORD }}
-
-      # -------------------------------------------------------------------
-      # 复用检测（关键优化）：如果同一 commit 的 sha-<full> 镜像已经存在
-      # （通常由 main 推送时构建并推送过），就不再重复构建，而是直接用
-      # `docker buildx imagetools create` 把它重打成本次的版本 / latest 标签。
-      # 命中则跳过下面的构建步骤；未命中才回退为真正构建。
-      # -------------------------------------------------------------------
-      - name: 复用检测（已构建则仅重打标签）
-        id: reuse
-        if: needs.meta.outputs.should_push == 'true'
-        env:
-          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME || vars.DOCKER_USERNAME }}
-          DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN || secrets.DOCKER_PASSWORD }}
-          TAGS: ${{ needs.meta.outputs.tags }}
-          APP_TAGS: ${{ needs.meta.outputs.app_tags }}
-          FULL_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          # 探测需要只读登录（imagetools inspect 需要凭据）
-          echo "${DOCKER_TOKEN}" | docker login "${REGISTRY}" -u "${DOCKER_USERNAME}" --password-stdin >/dev/null
-
-          api_src="${IMAGE}:sha-${FULL_SHA}"
-          app_src="${APP_IMAGE}:app-sha-${FULL_SHA}"
-
-          # 把 $1 指向的已存在镜像重打成 $2 里列出的所有标签（排除源自身）
-          retag() {
-            local src="$1" list="$2" args=()
-            while IFS= read -r t; do
-              [ -z "${t}" ] && continue
-              [ "${t}" = "${src}" ] && continue
-              args+=(--tag "${t}")
-            done <<< "${list}"
-            if [ ${#args[@]} -gt 0 ]; then
-              echo "重打标签：${src} -> ${list//$'\n'/ }"
-              docker buildx imagetools create "${args[@]}" "${src}"
-            fi
-          }
-
-          api_reused=false
-          if docker buildx imagetools inspect "${api_src}" >/dev/null 2>&1; then
-            api_reused=true
-            retag "${api_src}" "${TAGS}"
-          fi
-
-          app_reused=false
-          if docker buildx imagetools inspect "${app_src}" >/dev/null 2>&1; then
-            app_reused=true
-            retag "${app_src}" "${APP_TAGS}"
-          fi
-
-          echo "api_reused=${api_reused}" >> "$GITHUB_OUTPUT"
-          echo "app_reused=${app_reused}" >> "$GITHUB_OUTPUT"
-
-          {
-            echo "### 镜像复用检测"
-            echo ""
-            echo "| 镜像 | 源标签 | 命中（已构建） |"
-            echo "| --- | --- | --- |"
-            echo "| API | \`sha-${FULL_SHA}\` | ${api_reused} |"
-            echo "| 一体化 | \`app-sha-${FULL_SHA}\` | ${app_reused} |"
-            echo ""
-            echo "> 命中则跳过构建，仅重打版本标签（更快、更省资源）。"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      # 构建并推送后端 API 镜像（复用命中时跳过）
-      - name: 构建并推送镜像
-        id: build
-        if: steps.reuse.outputs.api_reused != 'true'
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: ./backend
-          file: ./backend/Dockerfile
-          push: ${{ needs.meta.outputs.should_push == 'true' }}
-          tags: ${{ needs.meta.outputs.tags != '' && needs.meta.outputs.tags || format('{0}:{1}', needs.meta.outputs.image, needs.meta.outputs.version) }}
-          build-args: |
-            APP_VERSION=${{ needs.meta.outputs.version }}
-            APP_BUILD=${{ needs.meta.outputs.short_sha }}
-            VCS_REF=${{ github.sha }}
-          labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ needs.meta.outputs.version }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          cache-from: type=gha,scope=zaima-api
-          cache-to: type=gha,scope=zaima-api,mode=max
-          provenance: true
-          sbom: true
-
-      # 一体化调试镜像：API + H5 同源，容器启动即可在浏览器打开页面（复用命中时跳过）
-      - name: 构建并推送一体化镜像（API + H5）
-        id: build_app
-        if: steps.reuse.outputs.app_reused != 'true'
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: .
-          file: ./Dockerfile.app
-          push: ${{ needs.meta.outputs.should_push == 'true' }}
-          tags: ${{ needs.meta.outputs.app_tags != '' && needs.meta.outputs.app_tags || format('{0}:app-{1}', needs.meta.outputs.app_image, needs.meta.outputs.version) }}
-          build-args: |
-            APP_VERSION=${{ needs.meta.outputs.version }}
-            APP_BUILD=${{ needs.meta.outputs.short_sha }}
-            VCS_REF=${{ github.sha }}
-          labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ needs.meta.outputs.version }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          cache-from: type=gha,scope=zaima-app
-          cache-to: type=gha,scope=zaima-app,mode=max
-          provenance: true
-          sbom: true
-
-      - name: 一体化镜像冒烟（启动后首页与接口均可访问）
-        env:
-          APP_TAGS: ${{ needs.meta.outputs.app_tags }}
-          LOCAL_TAG: zaima-app:smoke
-        run: |
-          set -euo pipefail
-          # 未推送时用本地构建的名字跑冒烟；推送时用刚推上去的 tag
-          if [ -n "${APP_TAGS}" ]; then
-            REF=$(printf '%s\n' "${APP_TAGS}" | head -1)
-            docker pull "${REF}"
-          else
-            REF="${LOCAL_TAG}"
-            docker build -f Dockerfile.app --build-arg APP_VERSION=smoke -t "${REF}" .
-          fi
-          # 测试镜像必须带前端产物
-          docker run --rm --entrypoint sh "${REF}" -c 'test -f /app/static/index.html' \
-            || { echo "::error::测试镜像缺少 /app/static/index.html"; exit 1; }
-          docker run -d --name zaima-app-smoke -p 18080:8000 "${REF}"
-          ok=0
-          for i in $(seq 1 40); do
-            if curl -fsS http://127.0.0.1:18080/api/health > /tmp/health.json 2>/dev/null; then ok=1; break; fi
-            sleep 2
-          done
-          test "${ok}" = "1" || { echo "::error::一体化镜像启动失败"; docker logs zaima-app-smoke; exit 1; }
-          curl -fsS http://127.0.0.1:18080/ -o /tmp/index.html
-          grep -qi "<div id=\"app\"" /tmp/index.html || { echo "::error::首页未返回 H5 入口"; exit 1; }
-          curl -fsS http://127.0.0.1:18080/api/health | tee /tmp/health.json
-          echo "首页与 /api/health 均可访问"
-          docker logs zaima-app-smoke 2>&1 | tail -20 || true
-
-      # 推完后回头验证：生产镜像里绝不能有前端产物
-      - name: 校验生产镜像不含前端
-        if: needs.meta.outputs.should_push == 'true'
-        env:
-          TAGS: ${{ needs.meta.outputs.tags }}
-        run: |
-          set -euo pipefail
-          REF=$(printf '%s\n' "${TAGS}" | head -1)
-          docker pull "${REF}"
-          docker run --rm --entrypoint sh "${REF}" -c '
-            test ! -d /app/static || { echo "::error::生产镜像不应包含 /app/static"; exit 1; }
-            n=$(find / -name "index.html" -not -path "*/site-packages/*" 2>/dev/null | wc -l)
-            test "$n" -eq 0 || { echo "::error::生产镜像内发现 index.html"; exit 1; }
-          '
-          echo "✓ 生产镜像 ${REF} 不含任何前端文件"
-
-      - name: 输出镜像信息与 Digest
-        env:
-          VERSION: ${{ needs.meta.outputs.version }}
-          DIGEST: ${{ steps.build.outputs.digest }}
-          APP_DIGEST: ${{ steps.build_app.outputs.digest }}
-          TAGS: ${{ needs.meta.outputs.tags }}
-          APP_TAGS: ${{ needs.meta.outputs.app_tags }}
-        run: |
-          set -euo pipefail
-          {
-            echo "### 镜像"
-            echo ""
-            echo "| 项目 | 值 |"
-            echo "| --- | --- |"
-            echo "| 镜像 | \`${IMAGE}\` |"
-            echo "| 版本标签 | \`${VERSION}\` |"
-            echo "| 标签列表 | \`$(echo "${TAGS}" | tr '\n' ' ')\` |"
-            echo "| Digest | \`${DIGEST:-未推送}\` |"
-            echo "| 是否推送 | \`${SHOULD_PUSH}\` |"
-            echo ""
-            echo "部署时可固定 Digest：\`${IMAGE}@${DIGEST:-<digest>}\`"
-            echo ""
-            echo "### 一体化调试镜像"
-            echo ""
-            echo "| 项目 | 值 |"
-            echo "| --- | --- |"
-            echo "| 标签列表 | \`$(echo "${APP_TAGS}" | tr '\n' ' ')\` |"
-            echo "| Digest | \`${APP_DIGEST:-未推送}\` |"
-            echo ""
-            echo "启动后直接访问 \`http://<host>:8000/\` 即可看到 H5；默认 \`APP_ENV=dev\` + SQLite + 模拟邮件，仅用于排查/演示。"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          mkdir -p release-manifest
-          cat > release-manifest/image.json <<EOF
-          {
-            "event": "${GITHUB_EVENT_NAME}",
-            "ref": "${GITHUB_REF}",
-            "commit": "${GITHUB_SHA}",
-            "version": "${VERSION}",
-            "image": "${IMAGE}",
-            "tags": $(echo "${TAGS}" | python3 -c 'import sys,json;print(json.dumps([l for l in sys.stdin.read().splitlines() if l.strip()]))'),
-            "digest": "${DIGEST:-}",
-            "appTags": $(echo "${APP_TAGS}" | python3 -c 'import sys,json;print(json.dumps([l for l in sys.stdin.read().splitlines() if l.strip()]))'),
-            "appDigest": "${APP_DIGEST:-}",
-            "pushed": ${SHOULD_PUSH}
-          }
-          EOF
-          cat release-manifest/image.json
-
-      - name: 上传发布清单
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: image-manifest-${{ needs.meta.outputs.version }}-${{ needs.meta.outputs.short_sha }}
-          path: release-manifest/image.json
-          retention-days: 90
-          if-no-files-found: error
-
-  # ------------------------------------------------------------------
-  # 6. GitHub Release（仅正式 Tag，且镜像推送成功后）
+  # 6. GitHub Release（仅正式 Tag）
   # ------------------------------------------------------------------
   github-release:
     name: 创建 GitHub Release
-    needs: [meta, docker]
+    needs: [meta, backend-tests, frontend-checks]
     if: needs.meta.outputs.is_release == 'true' && needs.meta.outputs.should_push == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -901,7 +528,7 @@ jobs:
   # ------------------------------------------------------------------
   report:
     name: 发布报告
-    needs: [meta, backend-tests, frontend-checks, frontend-artifacts, h5-images, docker, github-release]
+    needs: [meta, backend-tests, frontend-checks, frontend-artifacts, github-release]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -917,8 +544,6 @@ jobs:
           R_BACKEND: ${{ needs.backend-tests.result }}
           R_FRONTEND: ${{ needs.frontend-checks.result }}
           R_ARTIFACTS: ${{ needs.frontend-artifacts.result }}
-          R_H5: ${{ needs.h5-images.result }}
-          R_DOCKER: ${{ needs.docker.result }}
           R_RELEASE: ${{ needs.github-release.result }}
         run: |
           set -euo pipefail
@@ -941,8 +566,6 @@ jobs:
             echo "| 后端测试 | ${R_BACKEND} |"
             echo "| 前端检查 | ${R_FRONTEND} |"
             echo "| 前端产物 | ${R_ARTIFACTS} |"
-            echo "| H5 镜像（nginx/scratch） | ${R_H5} |"
-            echo "| 后端/一体化镜像 | ${R_DOCKER} |"
             echo "| GitHub Release | ${R_RELEASE} |"
             echo ""
             echo "### 产物"
@@ -952,10 +575,9 @@ jobs:
             echo "| Artifact | \`zaima-frontend-h5-${VERSION}-${SHORT_SHA}\` |"
             echo "| Artifact | \`zaima-frontend-mp-weixin-${VERSION}-${SHORT_SHA}\` |"
             echo "| Artifact | \`zaima-frontend-mp-alipay-${VERSION}-${SHORT_SHA}\` |"
-            echo "| Artifact | \`image-manifest-${VERSION}-${SHORT_SHA}\` |"
-            echo "| 镜像 | \`${IMAGE_NAME}:${VERSION}\` / \`${IMAGE_NAME}:app-${VERSION}\` / \`${IMAGE_NAME}:h5-${VERSION}\`（是否推送：\`${SHOULD_PUSH}\`） |"
+            echo "| 镜像 | 由独立工作流 \`Build Images\` 构建：\`${IMAGE_NAME}:${VERSION}\` / \`:app-${VERSION}\` / \`:h5-${VERSION}\`（是否推送：\`${SHOULD_PUSH}\`） |"
             echo ""
-            echo "> 详细镜像标签与 Digest 见上一步「镜像构建与发布」的摘要。"
+            echo "> 镜像构建/推送由本仓库的 \`Build Images\` 工作流执行（与 Release 同时触发），详情见该次运行摘要。"
             echo "> 只有全部阶段为 \`success\`（跳过项显示 \`skipped\`）时，本次发布才算完成。"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -967,8 +589,7 @@ jobs:
             "版本计算:${{ needs.meta.result }}" \
             "后端测试:${{ needs.backend-tests.result }}" \
             "前端检查:${{ needs.frontend-checks.result }}" \
-            "前端产物:${{ needs.frontend-artifacts.result }}" \
-            "镜像:${{ needs.docker.result }}"; do
+            "前端产物:${{ needs.frontend-artifacts.result }}"; do
             name="${entry%%:*}"
             result="${entry##*:}"
             if [ "${result}" = "failure" ] || [ "${result}" = "cancelled" ]; then
