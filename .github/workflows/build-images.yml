@@ -11,6 +11,8 @@ name: Build Images
 #   一体化调试      zaima:app-<ver>        / app-latest / app-sha-<sha>
 #   H5 可运行(nginx) zaima:h5-<ver>        / h5-latest / h5-sha-<sha>
 #   H5 纯产物(scratch) zaima:h5-assets-<ver> / h5-assets-latest / h5-assets-sha-<sha>
+#   （<ver>：release 推送用语义化版本号；未打标签的开发构建统一用 dev，且不再附加 sha
+#      标签，避免每次提交都产生大量一次性标签把镜像仓库塞满）
 #
 # 登录凭据（Docker Hub）：支持两种方式，任选其一
 #   - DOCKER_TOKEN   （Personal Access Token，推荐，支持开启 2FA 的账号）
@@ -39,7 +41,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '覆盖版本号（留空则 main 用 dev-<sha>，tag 用 tag 名）'
+        description: '覆盖版本号（留空则开发构建打 dev 标签，tag 推送用 tag 名）'
         required: false
         type: string
       push:
@@ -101,6 +103,7 @@ jobs:
           SHOULD_PUSH="false"
           IS_RELEASE="false"
           IS_PRERELEASE="false"
+          IS_DEV="false"
           LATEST="false"
 
           if [ "${EVENT_NAME}" = "push" ] && [ "${REF_TYPE}" = "tag" ]; then
@@ -114,13 +117,16 @@ jobs:
             if [[ "${VERSION}" =~ (a|b|rc)[0-9]+$ ]]; then IS_PRERELEASE="true"; fi
             if [ "${IS_PRERELEASE}" != "true" ]; then LATEST="true"; fi
           elif [ "${EVENT_NAME}" = "push" ]; then
-            VERSION="${VERSION:-dev-${SHORT_SHA}}"
+            # 未打标签的开发构建：统一用 dev，不附加 commit sha，避免每次提交都产生新标签把仓库塞满
+            VERSION="${VERSION:-dev}"
             SHOULD_PUSH="true"
+            IS_DEV="true"
             LATEST="true"
           elif [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
-            VERSION="${VERSION:-dev-${SHORT_SHA}}"
+            VERSION="${VERSION:-dev}"
             SHOULD_PUSH="${INPUT_PUSH:-true}"
             if [ "${SHOULD_PUSH}" = "true" ]; then LATEST="true"; fi
+            if [ "${VERSION}" = "dev" ]; then IS_DEV="true"; fi
           fi
 
           [ -n "${VERSION}" ] || { echo "::error::无法确定版本号"; exit 1; }
@@ -135,11 +141,16 @@ jobs:
           tag_lines() {
             local p="$1" out
             out="${IMAGE}:${p}${VERSION}"
-            out="${out}"$'\n'"${IMAGE}:${p}sha-${SHORT_SHA}"
+            # 仅 release 构建附加 per-commit 的 sha 标签；dev 构建跳过，避免标签无限堆积
+            if [ "${IS_DEV}" != "true" ]; then
+              out="${out}"$'\n'"${IMAGE}:${p}sha-${SHORT_SHA}"
+            fi
             if [ "${LATEST}" = "true" ]; then out="${out}"$'\n'"${IMAGE}:${p}latest"; fi
             if [ -n "${IMAGE_ALI}" ]; then
               out="${out}"$'\n'"${IMAGE_ALI}:${p}${VERSION}"
-              out="${out}"$'\n'"${IMAGE_ALI}:${p}sha-${SHORT_SHA}"
+              if [ "${IS_DEV}" != "true" ]; then
+                out="${out}"$'\n'"${IMAGE_ALI}:${p}sha-${SHORT_SHA}"
+              fi
               if [ "${LATEST}" = "true" ]; then out="${out}"$'\n'"${IMAGE_ALI}:${p}latest"; fi
             fi
             printf '%s\n' "${out}" | awk 'NF && !seen[$0]++'
